@@ -6,10 +6,10 @@
     "semantic_hash": "4b6c0c5dc54863e37fd7a8eb18cdf32f"
   },
   "examples/common.h": {
-    "mtime": 1794510078.084959,
-    "seen": 1794510729.8625352,
-    "ast_hash": "4cc1c8fed387673c98c0aee9c529bcb2",
-    "semantic_hash": "4cc1c8fed387673c98c0aee9c529bcb2"
+    "mtime": 1794526169.8085783,
+    "seen": 1794526420.5271094,
+    "ast_hash": "85b9c02d2e48f9c0f921ca8f1301314f",
+    "semantic_hash": ""
   },
   "examples/vban_mixer_demo.c": {
     "mtime": 1794505105.4271336,
@@ -30,16 +30,16 @@
     "semantic_hash": "dcee636b7247b6d91965230180345bd3"
   },
   "examples/vban_recv.c": {
-    "mtime": 1794507488.6485717,
-    "seen": 1794510729.8625457,
-    "ast_hash": "5119a0a5388e7f53c98cdd5e7bebef0d",
-    "semantic_hash": "5119a0a5388e7f53c98cdd5e7bebef0d"
+    "mtime": 1794526264.5129397,
+    "seen": 1794526420.527128,
+    "ast_hash": "928b5b954a1f08876ef6ef5c713ccb4a",
+    "semantic_hash": ""
   },
   "examples/vban_send.c": {
-    "mtime": 1794507488.6482131,
-    "seen": 1794510729.8625486,
-    "ast_hash": "5e4040241974a1cb7b0436c9b60511f9",
-    "semantic_hash": "5e4040241974a1cb7b0436c9b60511f9"
+    "mtime": 1794526247.424307,
+    "seen": 1794526420.527131,
+    "ast_hash": "71cd767925d9866fc583d536edf57f65",
+    "semantic_hash": ""
   },
   "examples/vban_text.c": {
     "mtime": 1794506146.673176,
@@ -48,10 +48,10 @@
     "semantic_hash": "b297d3208dd65cb449be4a8db8c3aaf8"
   },
   "src/vban.h": {
-    "mtime": 1794497279.39774,
-    "seen": 1794510729.8625693,
-    "ast_hash": "07421840a6adacb55143c93535eb36ee",
-    "semantic_hash": "07421840a6adacb55143c93535eb36ee"
+    "mtime": 1794526169.8052611,
+    "seen": 1794526420.527159,
+    "ast_hash": "7ca9e9698f67ffc0ed47fd18a10197f3",
+    "semantic_hash": ""
   },
   "src/vban.hpp": {
     "mtime": 1794497317.7697,
@@ -96,9 +96,9 @@
     "semantic_hash": "f6b542fe4700ab1fd957b0be9eb3b382"
   },
   "src/vban/vban_proto.h": {
-    "mtime": 1794511283.2048023,
-    "seen": 1794511290.470427,
-    "ast_hash": "f9c7a81f201ef834357facb48e75b280",
+    "mtime": 1794525555.1529207,
+    "seen": 1794526420.5271869,
+    "ast_hash": "511f3d03c4d318e40bc16e572b117cf7",
     "semantic_hash": ""
   },
   "src/vban/vban_rx.h": {
@@ -138,10 +138,10 @@
     "semantic_hash": "567cca331481e19c2e0e7496e4c1d15b"
   },
   "src/vban_proto.c": {
-    "mtime": 1794507327.9881608,
-    "seen": 1794510729.8626127,
-    "ast_hash": "bb814996d909c64b5af66400af71be44",
-    "semantic_hash": "bb814996d909c64b5af66400af71be44"
+    "mtime": 1794525558.462829,
+    "seen": 1794526420.5272124,
+    "ast_hash": "936883317f3dd027ad79cc5da8e3e493",
+    "semantic_hash": ""
   },
   "src/vban_rx.c": {
     "mtime": 1794506115.4734924,
@@ -168,15 +168,15 @@
     "semantic_hash": ""
   },
   "CMakeLists.txt": {
-    "mtime": 1794512026.9628415,
-    "seen": 1794512316.0371218,
-    "ast_hash": "d7c0ea2a443425f20baa6acb1c0ce12f",
+    "mtime": 1794526247.4129887,
+    "seen": 1794526420.5272436,
+    "ast_hash": "71f567c4e256f11ae7d0fcfc7608348c",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1794512313.0316007,
-    "seen": 1794512316.0371246,
-    "ast_hash": "e8a5280fe7bf782a9684fde13ef93b18",
+    "mtime": 1794526402.2332993,
+    "seen": 1794526420.5272465,
+    "ast_hash": "a628b0f2b727dd7e3eb9b9b67c5ecba6",
     "semantic_hash": ""
   },
   "bench/RESULTS_x86_64.txt": {
@@ -336,9 +336,9 @@
     "semantic_hash": "b2e6da576e0aa6f29519f62e2bc11a0d"
   },
   "kernel/snd_vban.c": {
-    "mtime": 1794512107.694536,
-    "seen": 1794512316.0370517,
-    "ast_hash": "00cb674a5bd9b842a5a5b4cd52462e30",
+    "mtime": 1794512323.1429672,
+    "seen": 1794526420.52715,
+    "ast_hash": "bc458ccdb1c8c11f2bcf7ab82fbb8f85",
     "semantic_hash": ""
   },
   "kernel/vm-test.sh": {
@@ -375,6 +375,66 @@
     "mtime": 1794512215.675039,
     "seen": 1794512316.0371187,
     "ast_hash": "e0b8f30795ac2a3754a89a6a32b29647",
+    "semantic_hash": ""
+  },
+  "examples/vban_cert.c": {
+    "mtime": 1794526280.8869715,
+    "seen": 1794526420.5271142,
+    "ast_hash": "aba70634b0786284be1a2d9ea87812bd",
+    "semantic_hash": ""
+  },
+  "src/vban/vban_noise.h": {
+    "mtime": 1794525549.6834815,
+    "seen": 1794526420.527181,
+    "ast_hash": "6b08242f9ecf3ddd82238742ba313b04",
+    "semantic_hash": ""
+  },
+  "src/vban/vban_secure.h": {
+    "mtime": 1794526110.8796644,
+    "seen": 1794526420.527192,
+    "ast_hash": "66af0cf7860813d7aa765d42f09cac09",
+    "semantic_hash": ""
+  },
+  "src/vban_noise.c": {
+    "mtime": 1794525595.6916442,
+    "seen": 1794526420.5272064,
+    "ast_hash": "ef66829aff909af921bb37c447b7ce40",
+    "semantic_hash": ""
+  },
+  "src/vban_secure.c": {
+    "mtime": 1794525955.7082105,
+    "seen": 1794526420.5272183,
+    "ast_hash": "bc80934d5cca5047882482f0bfe4740d",
+    "semantic_hash": ""
+  },
+  "tests/noise_xx_vector.h": {
+    "mtime": 1794525535.9971356,
+    "seen": 1794526420.5272243,
+    "ast_hash": "23b27dfaf28ccd7e4042284f6bc0ec7f",
+    "semantic_hash": ""
+  },
+  "tests/test_secure.c": {
+    "mtime": 1794526129.8861449,
+    "seen": 1794526420.527236,
+    "ast_hash": "5a4a428f5f5274399d0b311f2426a1dc",
+    "semantic_hash": ""
+  },
+  "third_party/monocypher/monocypher.c": {
+    "mtime": 1794525422.2249074,
+    "seen": 1794526420.5272386,
+    "ast_hash": "076da6c92a4059a861bd0d2865e6324e",
+    "semantic_hash": ""
+  },
+  "third_party/monocypher/monocypher.h": {
+    "mtime": 1794525422.2251747,
+    "seen": 1794526420.527241,
+    "ast_hash": "5f390f518264ec851b37a4a42c8ce206",
+    "semantic_hash": ""
+  },
+  "third_party/monocypher/LICENCE.md": {
+    "mtime": 1794525422.2253296,
+    "seen": 1794526420.5272698,
+    "ast_hash": "ff30a1c41dfd9e6fa559a9e45ee98302",
     "semantic_hash": ""
   }
 }
