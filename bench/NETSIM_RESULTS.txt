@@ -1,0 +1,32 @@
+mode: all  fec: none
+netsim: 120 s per scenario, 48 kHz stereo, 64 frames/packet, 128-frame audio period
+
+scenario           net ms    jb ms   E2E ms   target  underrun  lost pkt  repaired  late pkt  skips need p999 glitch ms/m
+wired LAN            0.17     6.70     8.88      192         0         0         0         0      1      0.10         0.0
+Wi-Fi good           2.20    15.77    19.97      641        12       408         0         0      2     12.68       292.2
+Wi-Fi congested     12.78    40.46    55.24     1744        37      2480         0         0     10     43.68      1799.2
+WAN / VPN           29.05    33.99    65.04     1550        29       704         0         0      8     33.78       490.3
+mode: all  fec: dup:4
+netsim: 120 s per scenario, 48 kHz stereo, 64 frames/packet, 128-frame audio period
+
+scenario           net ms    jb ms   E2E ms   target  underrun  lost pkt  repaired  late pkt  skips need p999 glitch ms/m
+wired LAN            0.17     6.70     8.88      192         0         0         0         0      1      5.43         0.0
+Wi-Fi good           2.20    15.77    19.98      627        12       408       376         0      2     17.71        26.5
+Wi-Fi congested     12.78    40.60    55.39     1812        30      2480      1989         6     10     48.39       370.2
+WAN / VPN           29.05    34.18    65.23     1536        28       704       664         2      8     37.95        45.1
+mode: all  fec: none
+netsim: 120 s per scenario, 48 kHz stereo, 32 frames/packet, 64-frame audio period
+
+scenario           net ms    jb ms   E2E ms   target  underrun  lost pkt  repaired  late pkt  skips need p999 glitch ms/m
+wired LAN            0.17     3.35     4.52       96         0         0         0         0      2      0.10         0.0
+Wi-Fi good           2.45    14.24    17.69      584        22       852         0         0      7     12.75       297.3
+Wi-Fi congested     18.53    32.13    51.67     1431        54      5045         0         0     20     44.11      1816.8
+WAN / VPN           30.62    31.55    63.16     1514        53      1427         0         0     15     34.48       511.5
+mode: all  fec: xor:4
+netsim: 120 s per scenario, 48 kHz stereo, 64 frames/packet, 128-frame audio period
+
+scenario           net ms    jb ms   E2E ms   target  underrun  lost pkt  repaired  late pkt  skips need p999 glitch ms/m
+wired LAN            0.17     6.70     8.88      192         0         0         0         0      1      0.10         0.0
+Wi-Fi good           2.20    15.77    19.97      626        12       408        87         0      2     12.70       235.2
+Wi-Fi congested     12.78    40.42    55.20     1751        33      2480       358         1     10     43.73      1560.8
+WAN / VPN           29.05    34.14    65.19     1558        30       704       176         0      8     33.78       370.3

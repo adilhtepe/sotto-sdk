@@ -1,0 +1,203 @@
+# VBAN SDK CI: build + run the test suite on every desktop backend, and
+# compile the embedded backends (ESP-IDF component, Arduino library).
+# All jobs build with VBAN_WERROR=ON, so a new warning fails CI.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------------ native
+  # Build, then run vban_tests (incl. real UDP loopback) and vban_cpp_test.
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,           os: ubuntu-latest,  args: -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ }
+          - { name: linux-clang-asan,    os: ubuntu-latest,  args: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DVBAN_SANITIZE=ON }
+          - { name: macos-arm64,         os: macos-latest }
+          - { name: macos-x86_64,        os: macos-15-intel }
+          - { name: windows-msvc-x64,    os: windows-latest, args: -A x64 }
+          - { name: windows-msvc-x86,    os: windows-latest, args: -A Win32 }
+          - { name: windows-clang-cl,    os: windows-latest, args: -A x64 -T ClangCL }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVBAN_WERROR=ON ${{ matrix.args }}
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Build without the socket layer (VBAN_ENABLE_NET=OFF)
+        if: matrix.name == 'linux-gcc'
+        run: |
+          cmake -S . -B build-nonet -DVBAN_WERROR=ON -DVBAN_ENABLE_NET=OFF -DVBAN_BUILD_TESTS=OFF
+          cmake --build build-nonet --parallel
+
+  # Windows on ARM64 with MSVC: exercises the _InterlockedOr/_InterlockedExchange
+  # atomics in vban_atomic.h (x86/x64 MSVC uses the TSO compiler-barrier path).
+  windows-arm64-cross:
+    name: windows-msvc-arm64 (cross build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -A ARM64 -DVBAN_WERROR=ON
+      - run: cmake --build build --config Release --parallel
+
+  windows-arm64-native:
+    name: windows-msvc-arm64 (native test)
+    # GitHub's Windows ARM64 runners are only offered to public repositories.
+    if: ${{ !github.event.repository.private }}
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -A ARM64 -DVBAN_WERROR=ON
+      - run: cmake --build build --config Release --parallel
+      - run: ctest --test-dir build -C Release --output-on-failure
+
+  # ------------------------------------------------------------------ MinGW
+  mingw:
+    name: windows-mingw-${{ matrix.sys }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sys: [ucrt64, mingw32, clang64]
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.sys }}
+          update: false
+          pacboy: >-
+            cc:p cmake:p ninja:p
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVBAN_WERROR=ON
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+
+  # ------------------------------------------------------------------ Linux cross (qemu)
+  linux-cross:
+    name: linux-${{ matrix.arch }} (qemu)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, triple: aarch64-linux-gnu,   qemu: qemu-aarch64 }
+          - { arch: armhf,   triple: arm-linux-gnueabihf, qemu: qemu-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-${{ matrix.triple }} qemu-user
+      - run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVBAN_WERROR=ON
+          -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }}
+          -DCMAKE_C_COMPILER=${{ matrix.triple }}-gcc -DCMAKE_CXX_COMPILER=${{ matrix.triple }}-g++
+          -DCMAKE_CROSSCOMPILING_EMULATOR="${{ matrix.qemu }};-L;/usr/${{ matrix.triple }}"
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure
+
+  # ------------------------------------------------------------------ Android
+  # NDK cross builds for every ABI. The x86_64 test suite is also linked
+  # statically against bionic and run directly on the runner (32-bit bionic
+  # binaries abort when the host pid exceeds 65535, so only 64-bit is run).
+  android:
+    name: android-${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVBAN_WERROR=ON
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=${{ matrix.abi }} -DANDROID_PLATFORM=android-21
+          && cmake --build build --parallel
+      - name: Run tests (static x86_64)
+        if: matrix.abi == 'x86_64'
+        run: |
+          CC="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          "$CC" --target=x86_64-linux-android21 -static -O2 -Isrc src/*.c tests/test_main.c -lm -o vban_tests_android
+          ./vban_tests_android
+
+  # ------------------------------------------------------------------ ESP-IDF
+  # The SDK root is an IDF component (ESP_PLATFORM branch of CMakeLists.txt);
+  # ci/esp-idf is a minimal app that links every module.
+  esp-idf:
+    name: esp-idf-${{ matrix.target }}
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.4.1
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32, esp32s3, esp32c3, esp32c6]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd ci/esp-idf
+          idf.py -B "build-${{ matrix.target }}" set-target ${{ matrix.target }} build 2>&1 | tee build.log
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: No warnings from SDK sources
+        shell: bash
+        run: |
+          if grep -E '(/src/|/ci/).*warning:' ci/esp-idf/build.log; then exit 1; fi
+
+  # ------------------------------------------------------------------ Arduino
+  # Installs the repo as a library (library.properties) and compiles a sketch.
+  arduino:
+    name: arduino-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: esp32
+            fqbn: esp32:esp32:esp32
+            platforms: |
+              - name: esp32:esp32
+                source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          - name: esp32c3
+            fqbn: esp32:esp32:esp32c3
+            platforms: |
+              - name: esp32:esp32
+                source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          - name: avr-mega
+            fqbn: arduino:avr:mega
+            platforms: |
+              - name: arduino:avr
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          fqbn: ${{ matrix.fqbn }}
+          platforms: ${{ matrix.platforms }}
+          libraries: |
+            - source-path: ./
+          sketch-paths: |
+            - ci/arduino/vban_smoke
+          cli-compile-flags: |
+            - --warnings
+            - all

@@ -1,0 +1,42 @@
+VBAN SDK 1.0.0 benchmark (200000 iterations)
+
+protocol
+  vban_parse (256x2 s16)                             13.1 ns/op     13.13 ns/pkt
+  vban_rx_process, 8 subs, match last                73.7 ns/op     73.72 ns/pkt
+
+pcm conversion (512 samples = 256 frames x 2 ch)
+  s16 -> f32                                        158.1 ns/op      0.31 ns/sample
+  f32 -> s16                                        651.7 ns/op      1.27 ns/sample
+  s24 -> f32                                       1031.4 ns/op      2.01 ns/sample
+  f32 -> s24                                       1170.9 ns/op      2.29 ns/sample
+  f32 -> f32 (wire)                                 351.3 ns/op      0.69 ns/sample
+  s16 -> s16 native                                  59.2 ns/op      0.12 ns/sample
+  gain in place s16                                1377.2 ns/op      2.69 ns/sample
+
+transmit
+  tx write_f32 256 frames -> 1 pkt (s16)            774.9 ns/op    774.88 ns/pkt
+  tx write_f32 256 frames -> 8 pkts of 32           794.5 ns/op     99.31 ns/pkt
+
+jitter buffer (stereo)
+  push 256 + pull 256 (no drift ctl)                237.3 ns/op      0.93 ns/frame
+  push 256 + pull 256 (resample)                   1919.1 ns/op      7.50 ns/frame
+  push 256 + pull_s16 256 (s16 ring)                829.0 ns/op      3.24 ns/frame
+
+mixer
+  8x8 full matrix, 128 frames                      2972.3 ns/op      0.36 ns/mac
+  8x8 diagonal (sparse), 128 frames                1440.9 ns/op      1.41 ns/mac
+
+end-to-end: tx_write -> UDP loopback -> recv -> rx_process -> jb_push
+  packets 20000  p50 10.0 us  p99 14.9 us  p99.9 19.0 us  max 410.2 us
+  (+ audio buffering: 64 frames @48k = 1.33 ms per packet, jitter target as configured)
+
+RAM footprint (no heap is ever used by the SDK)
+  vban_packet_t (view)           48 B
+  vban_jb_t                     128 B  + ring: frames*ch*4 (f32) or *2 (s16)
+      e.g. 2048 frames stereo s16 ring = 8192 B (42 ms @48k)
+  vban_mixer_t                   80 B  + matrix: 8x8 = 624 B
+  vban_tx_t                    1552 B  (holds one 1464 B packet)
+  vban_rx_t ( 8 subs)           544 B
+  vban_out_t                     48 B
+  vban_reasm_t                   40 B  + caller buffer
+  vban_ping0_t (decoded)        604 B
