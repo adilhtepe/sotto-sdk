@@ -180,7 +180,11 @@ typedef enum vban_err {
     VBAN_E_NET           = -8,  /* socket error */
     VBAN_E_TIMEOUT       = -9,  /* nothing received */
     VBAN_E_OVERSIZE      = -10, /* exceeds 1464 bytes / 256 samples */
-    VBAN_E_NOTFOUND      = -11
+    VBAN_E_NOTFOUND      = -11,
+    VBAN_E_AUTH          = -12, /* secure: does not authenticate (tag / handshake) */
+    VBAN_E_CERT          = -13, /* secure: certificate invalid, expired, wrong CA or refused */
+    VBAN_E_REPLAY        = -14, /* secure: counter already seen or too old */
+    VBAN_E_STATE         = -15  /* secure: message not expected in this session state */
 } vban_err_t;
 
 const char *vban_strerror(int err);

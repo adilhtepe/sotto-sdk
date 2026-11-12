@@ -14,6 +14,7 @@ src/vban/vban_mixer.h N x M matrix mixer, click-free ramps, limiter (pure C)
 src/vban/vban_rx.h    demux, PING0 responder, SERIAL/FRAME reassembly, RT-Packet server
 src/vban/vban_tx.h    zero-copy packetizer, TEXT/SERIAL/MIDI/FRAME/PING senders, pacer
 src/vban/vban_net.h   UDP (POSIX/Winsock, recvmmsg/sendmmsg), clock, RT thread priority
+src/vban/vban_secure.h optional secure VBAN: certificates, Noise XX handshake, encrypted packets
 ```
 
 ## Protocol coverage
@@ -438,8 +439,87 @@ proof-of-concept programs, found no memory corruption reachable from the network
 
 **Limits of what spec-compatible code can do.** Anyone who can send to the port can still inject audio
 into a stream, cancel an RT subscription (timeout 0), or keep disturbing a stream by sending forged
-packets non-stop. These need authentication. Until the optional secure mode exists (an AEAD envelope
-on an audited library), keep VBAN on trusted networks or inside a VPN such as WireGuard.
+packets non-stop. These need authentication: use secure VBAN (next section) between SDK devices, or
+keep plain VBAN on trusted networks or inside a VPN such as WireGuard.
+
+## Secure VBAN (`vban_secure.h`, ADR-003)
+An optional layer (`-DVBAN_ENABLE_SECURE=ON`, the default) that authenticates and encrypts VBAN
+between SDK devices and the hub. It does not change plain VBAN, and Voicemeeter keeps working
+unencrypted; the hub bridges between the two (phase 2).
+
+- **Crypto.** Monocypher 4.0.3 (BSD-2 / CC-0), vendored unmodified in `third_party/monocypher`. Its
+  SHA-512 was checked against monocypher.org and the GitHub release. No crypto is written here; this
+  layer only puts the primitives together as specified.
+- **Certificates.** A network CA (EdDSA key) signs device certificates. A certificate is 168 bytes:
+  name, role, validity, serial, key, issuer and signature, carried as base64 text. Each device
+  generates its own X25519 key and sends the CA only a request, so private keys never leave the
+  device. X.509 is not used: its parser is too big and too risky for an MCU.
+- **Handshake.** `Noise_XX_25519_ChaChaPoly_BLAKE2b`: three messages, mutual authentication with the
+  certificates, forward secrecy. Each side checks that the peer's certificate is from the CA, covers
+  the key the peer proved it holds, is within its dates (when the clock is known), and passes an
+  optional `authorize` callback for revocation and roles.
+- **Packets.** Each VBAN packet is encrypted whole, header included, with ChaCha20-Poly1305 and sent
+  inside a VBAN `USER` (0xE0) packet, which plain receivers ignore. The 28-byte outer header (type,
+  session indices, 64-bit counter) is authenticated. Overhead is 44 bytes, so the inner packet is
+  at most 1420 bytes (audio payload ≤ 1392). A 64-packet window rejects replays and accepts
+  reordering.
+- **Lifetime.** The initiator rekeys every 120 s; keys are refused after 180 s. The old receive key
+  stays usable for 10 s, so packets in flight are not lost. An unanswered handshake is retried every
+  second.
+
+```bash
+vban_cert ca "Studio CA" 3650 ca.key ca.crt          # once; keep ca.key safe
+vban_cert key mic.key                                # on the device
+vban_cert req mic.key "PC mic" tx mic.req            # send mic.req to the CA
+vban_cert sign ca.key ca.crt mic.req 365 mic.crt     # at the CA; give mic.crt back
+vban_recv -n Stream1 --ca ca.crt --cert rx.crt --key rx.key | aplay -f S16_LE -r 48000 -c 2
+vban_send -i 192.168.1.20 -n Stream1 --ca ca.crt --cert mic.crt --key mic.key
+```
+
+In code, a transmitter wraps its send callback with `vban_sec_link_seal()` and feeds replies to
+`vban_sec_link_handle()` / `vban_sec_link_tick()`. A receiver keeps a `vban_sec_server_t` (a table of
+peers you allocate) and passes each opened packet to `vban_rx_process()`. See `examples/vban_send.c`
+and `examples/vban_recv.c`.
+
+**Cost** (x86-64, `-O2`):
+
+| Item | Value |
+|---|---|
+| Seal + open, 64-frame stereo s16 packet (284 B) | 3.7 µs together |
+| Seal + open, 1052 B packet | 9.6 µs together |
+| Seal + open, 1420 B packet | 12.9 µs together |
+| Full handshake, both sides | 2.2 ms |
+| One session | 680 B |
+| Initiator link (two sessions) | 1.4 KB |
+| Code, aarch64 `-Os` | Monocypher 36 KB, secure layer 15 KB |
+
+At 750 packets/s, encryption costs about 0.3 % of a core. Only what you call gets linked from the
+static library, but Monocypher is one object: link with `-ffunction-sections -Wl,--gc-sections` to
+drop its unused parts.
+
+**Tests.** `vban_secure_test` (in `ctest`, 180 checks) covers:
+- the `Noise_XX_25519_ChaChaPoly_BLAKE2b` vector from the cacophony suite: all three handshake
+  messages, the handshake hash and the transport messages, byte for byte;
+- every single-bit change of a certificate, and every single-bit change of a DATA packet (all
+  rejected);
+- wrong CA on either side, an expired certificate, a refusal by the `authorize` callback, a stolen
+  certificate without its key, and a tampered session index;
+- replay, reordering, and expiry;
+- retry, rekey with the old key still accepted, and peer roaming;
+- the responder's table limit and handshake rate limit;
+- `vban_tx` → seal → open → `vban_rx` end to end.
+
+Over real UDP, `vban_send` → `vban_recv` in secure mode delivered a tone with 0 loss at the same
+latency as plain mode. A plain sender (1125 packets) and a sender with a certificate from another CA
+were both refused.
+
+**Limits:**
+- A responder accepts any handshake start and keeps a slot for it for 5 s. Its table and rate limit
+  (20/s by default) bound the CPU cost, but a flood of handshake starts can keep new peers waiting.
+  The hub adds per-address limits in phase 2.
+- Devices without a clock (`now_unix = 0`) cannot check validity dates; revocation through
+  `authorize` still works.
+- Not yet run on Windows, ESP-IDF or Android. It does compile for Cortex-M4 and aarch64.
 
 ## Limits
 - IPv4 only. The VBAN ecosystem, including PING0's `DistantIP_ascii`, is IPv4.

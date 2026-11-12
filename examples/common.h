@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -97,6 +98,50 @@ static inline char *ex_safe_text(const char *in, size_t n, char *out, size_t cap
     }
     out[o] = 0;
     return out;
+}
+
+/* ---- secure mode: --ca FILE --cert FILE --key FILE (text files from vban_cert) ---- */
+static inline int ex_read_file(const char *path, char *buf, size_t cap)
+{
+    FILE *f = fopen(path, "rb");
+    size_t n;
+    if (!f) return -1;
+    n = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return (int)n;
+}
+
+static inline int ex_load_pem(const char *path, const char *label, uint8_t *out, size_t len)
+{
+    char txt[4096];
+    int n = ex_read_file(path, txt, sizeof txt);
+    if (n < 0) { fprintf(stderr, "cannot read %s\n", path); return -1; }
+    if (vban_pem_decode(label, txt, (size_t)n, out, len) != (int)len) {
+        fprintf(stderr, "%s: no valid %s\n", path, label);
+        return -1;
+    }
+    memset(txt, 0, sizeof txt);
+    return 0;
+}
+
+/* Returns 1 if secure mode was requested and loaded, 0 if not requested, -1 on error. */
+static inline int ex_load_identity(int argc, char **argv, vban_sec_id_t *id)
+{
+    const char *ca = arg_str(argc, argv, "--ca", NULL), *cert = arg_str(argc, argv, "--cert", NULL),
+               *key = arg_str(argc, argv, "--key", NULL);
+    uint8_t cab[VBAN_CERT_SIZE], cb[VBAN_CERT_SIZE], sk[32];
+    int r;
+    if (!ca && !cert && !key) return 0;
+    if (!ca || !cert || !key) { fprintf(stderr, "secure mode needs --ca, --cert and --key\n"); return -1; }
+    if (ex_load_pem(ca, "VBAN CERT", cab, sizeof cab) || ex_load_pem(cert, "VBAN CERT", cb, sizeof cb) ||
+        ex_load_pem(key, "VBAN PRIVATE KEY", sk, sizeof sk))
+        return -1;
+    r = vban_sec_id_init(id, sk, cb, sizeof cb, cab, sizeof cab);
+    memset(sk, 0, sizeof sk);
+    if (r) { fprintf(stderr, "identity rejected: %s\n", vban_strerror(r)); return -1; }
+    id->now_unix = (uint64_t)time(NULL);
+    return 1;
 }
 
 #endif

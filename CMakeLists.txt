@@ -5,7 +5,8 @@ if(ESP_PLATFORM)
     idf_component_register(
         SRCS src/vban_proto.c src/vban_pcm.c src/vban_jitter.c src/vban_mixer.c
              src/vban_rx.c src/vban_tx.c src/vban_net.c
-        INCLUDE_DIRS src)
+             src/vban_noise.c src/vban_secure.c third_party/monocypher/monocypher.c
+        INCLUDE_DIRS src third_party/monocypher)
     target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -fno-math-errno -fno-trapping-math)
     return()
 endif()
@@ -18,15 +19,29 @@ option(VBAN_BUILD_BENCH     "Build benchmarks"               ON)
 option(VBAN_ENABLE_NET      "Build the socket layer"         ON)
 option(VBAN_SANITIZE        "Build with ASan + UBSan"        OFF)
 option(VBAN_WERROR          "Treat compiler warnings as errors (CI)" OFF)
+option(VBAN_ENABLE_SECURE   "Secure VBAN (certificates, Noise XX, ChaCha20-Poly1305; Monocypher)" ON)
 
 set(VBAN_SOURCES
     src/vban_proto.c src/vban_pcm.c src/vban_jitter.c src/vban_mixer.c
     src/vban_rx.c src/vban_tx.c src/vban_net.c)
 
+if(VBAN_ENABLE_SECURE)
+    list(APPEND VBAN_SOURCES src/vban_noise.c src/vban_secure.c)
+    # Vendored, unmodified (third_party/monocypher/VERSION): built with its own flags, no -Wpedantic noise.
+    add_library(vban_monocypher OBJECT third_party/monocypher/monocypher.c)
+    set_target_properties(vban_monocypher PROPERTIES C_STANDARD 99 POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(vban_monocypher PUBLIC third_party/monocypher)
+    list(APPEND VBAN_SOURCES $<TARGET_OBJECTS:vban_monocypher>)
+endif()
+
 add_library(vban STATIC ${VBAN_SOURCES})
+if(WIN32 AND VBAN_ENABLE_SECURE)
+    target_link_libraries(vban PUBLIC bcrypt)   # BCryptGenRandom
+endif()
 add_library(vban::vban ALIAS vban)
 target_include_directories(vban PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher>
     $<INSTALL_INTERFACE:include>)
 set_target_properties(vban PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 if(NOT VBAN_ENABLE_NET)
@@ -92,10 +107,20 @@ if(VBAN_BUILD_TESTS)
     target_link_libraries(vban_parity PRIVATE vban)
     target_compile_options(vban_parity PRIVATE ${VBAN_WARN})
     add_test(NAME vban_parity COMMAND vban_parity)
+    if(VBAN_ENABLE_SECURE)
+        add_executable(vban_secure_test tests/test_secure.c)
+        target_link_libraries(vban_secure_test PRIVATE vban)
+        target_compile_options(vban_secure_test PRIVATE ${VBAN_WARN})
+        add_test(NAME vban_secure_test COMMAND vban_secure_test)
+    endif()
 endif()
 
 if(VBAN_BUILD_EXAMPLES AND VBAN_ENABLE_NET)
-    foreach(ex vban_send vban_recv vban_ping vban_text vban_mixer_demo vban_monitor)
+    set(VBAN_EXAMPLES vban_send vban_recv vban_ping vban_text vban_mixer_demo vban_monitor)
+    if(VBAN_ENABLE_SECURE)
+        list(APPEND VBAN_EXAMPLES vban_cert)
+    endif()
+    foreach(ex ${VBAN_EXAMPLES})
         add_executable(${ex} examples/${ex}.c)
         target_link_libraries(${ex} PRIVATE vban)
         target_compile_options(${ex} PRIVATE ${VBAN_WARN})

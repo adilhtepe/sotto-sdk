@@ -25,5 +25,6 @@
 #include "vban/vban_rx.h"
 #include "vban/vban_tx.h"
 #include "vban/vban_net.h"
+#include "vban/vban_secure.h"   /* needs VBAN_ENABLE_SECURE (default on) at build time */
 
 #endif /* VBAN_H */

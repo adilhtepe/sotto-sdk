@@ -10,6 +10,9 @@
  *   -o fmt    s16 | f32 (s16)             -l ms    initial latency target (10)
  *   --slip    drift by frame slip instead of resampling
  *   -q        quiet (no stats on stderr)
+ *   --ca ca.crt --cert me.crt --key me.key
+ *             secure VBAN: accept only authenticated senders certified by this CA
+ *             (up to 8 at once); plain VBAN packets are dropped
  *
  * The network side runs on a thread-free poll loop; output is clocked by the
  * wall clock at the output rate, standing in for an audio device callback.
@@ -17,6 +20,29 @@
 #include "common.h"
 
 static vban_jb_t g_jb;
+static vban_sec_id_t g_id;
+static vban_sec_peer_t g_peers[8];
+static vban_sec_server_t g_srv;
+static uint32_t g_plain_dropped, g_sec_bad;
+
+/* Secure mode: handshakes are answered, DATA is opened and the inner packet goes
+ * to the normal receiver as if it came from the authenticated peer. */
+static void sec_input(vban_socket_t *s, vban_rx_t *rx, const uint8_t *buf, size_t len, const vban_addr_t *from,
+                      uint64_t now_ns)
+{
+    uint8_t out[VBAN_PACKET_MAX_SIZE];
+    vban_sec_peer_t *peer;
+    int ev, n;
+    if (len < VBAN_HEADER_SIZE || buf[4] != VBAN_PROTOCOL_USER) { g_plain_dropped++; return; }
+    n = vban_sec_server_handle(&g_srv, &g_id, buf, len, from, now_ns / 1000000u, out, sizeof out, &ev, &peer);
+    if (n < 0) { g_sec_bad++; return; }
+    if (ev == VBAN_SEC_EV_SEND) vban_udp_send(s, out, (size_t)n, from);
+    else if (ev == VBAN_SEC_EV_UP) {
+        char nm[VBAN_CERT_NAME_MAX * 2 + 1];
+        fprintf(stderr, "\nsecure session up with '%s'\n", ex_safe_text(peer->s.peer.name, sizeof peer->s.peer.name, nm, sizeof nm));
+    } else if (ev == VBAN_SEC_EV_DATA)
+        vban_rx_process(rx, out, (size_t)n, &peer->addr, now_ns);
+}
 
 int main(int argc, char **argv)
 {
@@ -34,8 +60,12 @@ int main(int argc, char **argv)
     const char *srcip = arg_str(argc, argv, "-s", NULL);
     uint64_t next_out = 0, next_stat;
     const unsigned period = 128;
+    int secure;
 
     ex_init();
+    secure = ex_load_identity(argc, argv, &g_id);
+    if (secure < 0) return 2;
+    if (secure) vban_sec_server_init(&g_srv, g_peers, 8, 20);
     if (ch < 1 || ch > 8) { fprintf(stderr, "1..8 output channels\n"); return 2; }
     memset(&jc, 0, sizeof jc);
     jc.channels = (uint16_t)ch;
@@ -63,7 +93,10 @@ int main(int argc, char **argv)
         uint64_t now = vban_time_ns();
         long wait_us = next_out ? (long)((next_out > now ? next_out - now : 0) / 1000) : 100000;
         int n = vban_udp_recv_batch_us(&s, msgs, VBAN_NET_BATCH, wait_us);
-        for (i = 0; n > 0 && i < (unsigned)n; ++i) vban_rx_process(&rx, msgs[i].buf, msgs[i].len, &msgs[i].addr, now);
+        for (i = 0; n > 0 && i < (unsigned)n; ++i) {
+            if (secure) sec_input(&s, &rx, msgs[i].buf, msgs[i].len, &msgs[i].addr, now);
+            else vban_rx_process(&rx, msgs[i].buf, msgs[i].len, &msgs[i].addr, now);
+        }
 
         now = vban_time_ns();
         if (!next_out && g_jb.in_rate) next_out = now;
@@ -84,6 +117,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "\r%u Hz pkts %u lost %u repaired %u late %u under %u latency %.1f ms target %u ratio %.5f   ",
                     st.stream_rate, st.packets, st.lost, st.repaired, st.late, st.underruns, vban_jb_latency_us(&g_jb) / 1000.0,
                     st.target_frames, st.ratio);
+            if (secure) fprintf(stderr, "plain dropped %u bad %u   ", g_plain_dropped, g_sec_bad);
             next_stat = now + 1000000000ull;
         }
     }

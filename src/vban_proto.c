@@ -36,6 +36,10 @@ const char *vban_strerror(int err)
     case VBAN_E_TIMEOUT:     return "timeout";
     case VBAN_E_OVERSIZE:    return "packet exceeds VBAN limits";
     case VBAN_E_NOTFOUND:    return "not found";
+    case VBAN_E_AUTH:        return "authentication failed";
+    case VBAN_E_CERT:        return "certificate rejected";
+    case VBAN_E_REPLAY:      return "replayed or too old";
+    case VBAN_E_STATE:       return "unexpected in this session state";
     default:                 return "unknown error";
     }
 }

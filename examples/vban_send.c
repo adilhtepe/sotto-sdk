@@ -13,9 +13,56 @@
  *   -t hz      tone frequency (440)
  *   -R n       resend every packet n packets later (loss protection, 2x bandwidth;
  *              ~5 ms is a good delay: 4 at 64 frames / 48 kHz)
+ *   --ca ca.crt --cert me.crt --key me.key
+ *              secure VBAN: handshake with the destination (a hub or vban_recv in
+ *              secure mode), then every packet is encrypted and authenticated
  */
 #include "common.h"
 #include <math.h>
+
+/* Secure mode: the transmitter's send callback seals each packet; handshake
+ * replies are read between audio blocks. */
+typedef struct {
+    vban_socket_t  *s;
+    vban_sec_id_t   id;
+    vban_sec_link_t link;
+    vban_addr_t     to;
+    uint32_t        dropped;     /* audio before the session was up */
+    int             was_up;
+} sec_out_t;
+
+static uint64_t now_ms(void) { return vban_time_ns() / 1000000u; }
+
+static int sec_send(void *ctx, const uint8_t *pkt, size_t len, const vban_addr_t *to)
+{
+    sec_out_t *o = (sec_out_t *)ctx;
+    uint8_t w[VBAN_PACKET_MAX_SIZE];
+    int n = vban_sec_link_seal(&o->link, pkt, len, now_ms(), w, sizeof w);
+    if (n < 0) { o->dropped++; return (int)len; }   /* not up yet: drop, keep going */
+    return vban_udp_send(o->s, w, (size_t)n, to) < 0 ? VBAN_E_NET : (int)len;
+}
+
+static void sec_pump(sec_out_t *o)
+{
+    uint8_t in[VBAN_PACKET_MAX_SIZE], out[VBAN_PACKET_MAX_SIZE];
+    vban_addr_t from;
+    int n, ev, up;
+    while ((n = vban_udp_recv(o->s, in, sizeof in, &from, 0)) > 0) {
+        if (from.ip != o->to.ip || from.port != o->to.port) continue;
+        n = vban_sec_link_handle(&o->link, &o->id, in, (size_t)n, now_ms(), out, sizeof out, &ev);
+        if (n > 0 && ev == VBAN_SEC_EV_SEND) vban_udp_send(o->s, out, (size_t)n, &o->to);
+        else if (n < 0 && n != VBAN_E_STATE) fprintf(stderr, "\nsecure: %s\n", vban_strerror(n));
+    }
+    if ((n = vban_sec_link_tick(&o->link, &o->id, now_ms(), out, sizeof out)) > 0)
+        vban_udp_send(o->s, out, (size_t)n, &o->to);
+    up = vban_sec_link_up(&o->link, now_ms());
+    if (up && !o->was_up) {
+        char nm[VBAN_CERT_NAME_MAX * 2 + 1];
+        fprintf(stderr, "secure session up with '%s'\n",
+                ex_safe_text(o->link.cur.peer.name, sizeof o->link.cur.peer.name, nm, sizeof nm));
+    }
+    o->was_up = up;
+}
 
 int main(int argc, char **argv)
 {
@@ -30,8 +77,12 @@ int main(int argc, char **argv)
     enum { BLOCK = 64 };
     static float buf[BLOCK * 256];
     static int16_t ibuf[BLOCK * 256];
+    static sec_out_t sec;
+    int secure;
 
     ex_init();
+    secure = ex_load_identity(argc, argv, &sec.id);
+    if (secure < 0) return 2;
     memset(&c, 0, sizeof c);
     c.name = arg_str(argc, argv, "-n", "Stream1");
     c.sample_rate = (uint32_t)arg_int(argc, argv, "-r", 48000);
@@ -50,6 +101,18 @@ int main(int argc, char **argv)
         return 1;
     }
     vban_tx_add_dest(&tx, &to);
+    if (secure) {
+        if (VBAN_HEADER_SIZE + vban_pcm_bytes(tx.fpp, ch, c.datatype) > VBAN_SEC_INNER_MAX) {
+            fprintf(stderr, "secure packets carry at most %d payload bytes: use fewer frames (-b)\n",
+                    VBAN_SEC_INNER_MAX - VBAN_HEADER_SIZE);
+            return 2;
+        }
+        sec.s = &s;
+        sec.to = to;
+        vban_sec_link_init(&sec.link);
+        tx.send = sec_send;
+        tx.send_ctx = &sec;
+    }
     {
         static uint8_t red_hist[VBAN_TX_REDUNDANCY_MAX * VBAN_PACKET_MAX_SIZE];
         long red = arg_int(argc, argv, "-R", 0);
@@ -64,6 +127,7 @@ int main(int argc, char **argv)
 
     vban_pacer_init(&pacer, c.sample_rate);
     while (!g_stop) {
+        if (secure) sec_pump(&sec);
         if (use_stdin) {
             size_t got = fread(ibuf, sizeof(int16_t) * ch, BLOCK, stdin);
             if (got == 0) break;
@@ -82,6 +146,7 @@ int main(int argc, char **argv)
     }
     vban_tx_flush(&tx);
     fprintf(stderr, "\n%u packets, %u errors\n", tx.stats.packets, tx.stats.errors);
+    if (secure) fprintf(stderr, "secure: %u packets dropped before the session was up\n", sec.dropped);
     vban_udp_close(&s);
     vban_net_cleanup();
     return 0;
