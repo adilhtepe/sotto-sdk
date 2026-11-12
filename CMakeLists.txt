@@ -87,6 +87,11 @@ if(VBAN_BUILD_TESTS)
     target_link_libraries(vban_cpp_test PRIVATE vban)
     target_compile_options(vban_cpp_test PRIVATE ${VBAN_WARN})
     add_test(NAME vban_cpp_test COMMAND vban_cpp_test)
+    # kernel ring (kernel/vban_kring.h) vs SDK jitter buffer on simulated networks
+    add_executable(vban_parity tests/test_parity.c)
+    target_link_libraries(vban_parity PRIVATE vban)
+    target_compile_options(vban_parity PRIVATE ${VBAN_WARN})
+    add_test(NAME vban_parity COMMAND vban_parity)
 endif()
 
 if(VBAN_BUILD_EXAMPLES AND VBAN_ENABLE_NET)

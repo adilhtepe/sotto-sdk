@@ -3,3 +3,15 @@ build*/
 *.a
 .10x/
 graphify-out/cache/
+.gradle/
+.cxx/
+local.properties
+kernel/*.ko
+kernel/*.o
+kernel/*.mod
+kernel/*.mod.c
+kernel/.*.cmd
+kernel/shim/*.o
+kernel/shim/.*.cmd
+kernel/Module.symvers
+kernel/modules.order

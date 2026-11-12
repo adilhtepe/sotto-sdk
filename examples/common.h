@@ -18,6 +18,7 @@ static void on_sigint(int s) { (void)s; g_stop = 1; }
 static void ex_init(void)
 {
     signal(SIGINT, on_sigint);
+    signal(SIGTERM, on_sigint);  /* systemd / timeout: stop cleanly and flush output */
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stdin), _O_BINARY);

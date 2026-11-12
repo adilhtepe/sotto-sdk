@@ -262,6 +262,59 @@ static void test_ping0(void)
 
 /* =================================================== PCM */
 
+/* Public helpers that had no coverage (found via the knowledge graph:
+ * symbols with no inbound edges from tests). */
+static void test_small_helpers(void)
+{
+    uint8_t b[64];
+    vban_name_t n;
+    float in3[4 * 3], a[4], c3[4], out3[4 * 3], l[5], r[5], st[10];
+    float *planar3[3], *planar2[2];
+    const float *cplanar3[3];
+    unsigned i;
+
+    /* vban_is_vban: magic + minimum length */
+    vban_name_set(&n, "x");
+    vban_build_audio_header(b, &n, 48000, 1, 1, VBAN_DATATYPE_S16, 0);
+    CHECK(vban_is_vban(b, 28));
+    CHECK(!vban_is_vban(b, 27));
+    b[3] = 'M';
+    CHECK(!vban_is_vban(b, 28));
+
+    /* vban_pcm_bytes: samples * channels * size; 0 for the undefined 10/12-bit layouts */
+    CHECK_EQ(vban_pcm_bytes(256, 2, VBAN_DATATYPE_S16), 1024);
+    CHECK_EQ(vban_pcm_bytes(239, 2, VBAN_DATATYPE_S24), 1434);
+    CHECK_EQ(vban_pcm_bytes(1, 256, VBAN_DATATYPE_F64), 2048);
+    CHECK_EQ(vban_pcm_bytes(64, 2, VBAN_DATATYPE_S12), 0);
+
+    /* deinterleave, generic path (3 ch) with a NULL output to skip */
+    for (i = 0; i < 12; ++i) in3[i] = (float)i;
+    planar3[0] = a; planar3[1] = NULL; planar3[2] = c3;
+    vban_f32_deinterleave(in3, planar3, 3, 4);
+    CHECK(a[0] == 0.0f && a[3] == 9.0f && c3[0] == 2.0f && c3[3] == 11.0f);
+    /* interleave back: NULL input channel becomes silence */
+    cplanar3[0] = a; cplanar3[1] = NULL; cplanar3[2] = c3;
+    vban_f32_interleave(cplanar3, out3, 3, 4);
+    CHECK(out3[0] == 0.0f && out3[1] == 0.0f && out3[2] == 2.0f && out3[9] == 9.0f && out3[10] == 0.0f && out3[11] == 11.0f);
+    /* stereo fast path round trip */
+    for (i = 0; i < 10; ++i) st[i] = (float)i * 0.5f;
+    planar2[0] = l; planar2[1] = r;
+    vban_f32_deinterleave(st, planar2, 2, 5);
+    CHECK(l[4] == 4.0f && r[4] == 4.5f);
+    {
+        float back[10];
+        const float *cp2[2];
+        cp2[0] = l; cp2[1] = r;
+        vban_f32_interleave(cp2, back, 2, 5);
+        CHECK(memcmp(back, st, sizeof back) == 0);
+    }
+    /* stereo with one NULL output takes the generic path, other channel still filled */
+    planar2[0] = NULL; planar2[1] = r;
+    memset(r, 0, sizeof r);
+    vban_f32_deinterleave(st, planar2, 2, 5);
+    CHECK(r[2] == 2.5f);
+}
+
 static void test_pcm_hostile_floats(void)
 {
     /* hostile float samples (SEC-005): NaN -> 0, +-Inf / huge -> +-1, no UB on int conversion */
@@ -1198,6 +1251,7 @@ int main(void)
     RUN(test_ping0);
     RUN(test_pcm);
     RUN(test_pcm_hostile_floats);
+    RUN(test_small_helpers);
     RUN(test_jitter_basic);
     RUN(test_jitter_remap_s16_adaptive);
     RUN(test_jitter_resample);

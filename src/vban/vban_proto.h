@@ -165,6 +165,9 @@ typedef int (*vban_send_fn)(void *ctx, const uint8_t *pkt, size_t len, const vba
 /* ------------------------------------------------------------------ */
 /* Error codes                                                          */
 /* ------------------------------------------------------------------ */
+/* Error codes. Functions return them as plain `int` (VBAN_OK = 0, negative =
+ * error) so the same values can carry counts and lengths; vban_err_t only names
+ * the set. */
 typedef enum vban_err {
     VBAN_OK              =  0,
     VBAN_E_ARG           = -1,  /* bad argument */

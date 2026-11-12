@@ -16,6 +16,7 @@
  * = packetization (fpp/2) + mean network delay + jitter buffer + period/2.
  */
 #include "vban.h"
+#include "../kernel/vban_kring.h"   /* the snd-vban kernel ring, compiled for userspace */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +56,10 @@ typedef struct arrival { double t; uint32_t frame; } arrival_t;
 /* FEC under test: 0 = none, 1 = duplicate each packet D slots later,
  * 2 = XOR parity over K packets (repairs one loss per group). */
 static int g_fec_mode, g_fec_arg;
+
+/* Receiver engine: 0 = SDK jitter buffer (float, adaptive), >0 = the snd-vban
+ * kernel ring (integer, fixed target of this many frames). */
+static int g_kring_target;
 static int cmp_arr(const void *a, const void *b)
 {
     double x = ((const arrival_t *)a)->t, y = ((const arrival_t *)b)->t;
@@ -71,6 +76,7 @@ typedef struct result {
     double jb_ms, net_ms, e2e_ms, need999_ms, need99_ms;
     double glitch_ms_min;   /* audible non-stream audio per minute: silence (priming/underrun) + concealment */
     uint32_t target, underruns, lost_pkts, late, concealed_frames, skips, repaired;
+    uint64_t kr_reprimes, kr_skips;   /* kernel engine only */
 } result_t;
 
 static result_t run(const scenario_t *sc, double seconds, unsigned fpp, unsigned period, uint32_t min_frames)
@@ -97,6 +103,11 @@ static result_t run(const scenario_t *sc, double seconds, unsigned fpp, unsigned
     jc.channels = CH; jc.adaptive = 1; jc.drift = VBAN_JB_DRIFT_RESAMPLE;
     jc.target_frames = 2 * fpp; jc.min_frames = min_frames;
     vban_jb_init(&jb, &jc, ring, CAP);
+    static s16 kring_buf[KRING_FRAMES * CH];
+    static int16_t out16[1024 * CH];
+    struct vban_kring kr;
+    kring_init(&kr, kring_buf, CH, (int)fpp, g_kring_target > 0 ? g_kring_target : 256);
+    kring_start(&kr);
     vban_name_set(&name, "sim");
 
     /* ---- network: arrival times, FIFO, loss ---- */
@@ -161,17 +172,20 @@ static result_t run(const scenario_t *sc, double seconds, unsigned fpp, unsigned
             vban_build_audio_header(pkt, &name, RATE, fpp, CH, VBAN_DATATYPE_S16, arr[ai].frame);
             memset(pkt + 28, 0, fpp * CH * 2);
             vban_parse(pkt, 28 + fpp * CH * 2, &p, 0);
-            vban_jb_push(&jb, &p);
+            if (g_kring_target) kring_place(&kr, &p);
+            else vban_jb_push(&jb, &p);
             ++ai;
         }
         if (pull_t > 5.0) { /* skip the convergence period */
             vban_jb_get_stats(&jb, &st);
-            jb_sum += (double)st.fill_frames / RATE;
+            if (g_kring_target) st.concealed_frames = (uint32_t)kr.concealed;
+            jb_sum += (double)(g_kring_target ? (uint32_t)(kring_fill(&kr) > 0 ? kring_fill(&kr) : 0) : st.fill_frames) / RATE;
             ++pulls;
             if (!measuring) { measuring = 1; conc0 = st.concealed_frames; }
         }
         {
-            size_t got = vban_jb_pull_f32(&jb, out, period);
+            size_t got = g_kring_target ? kring_pull(&kr, (__le16 *)out16, period)
+                                        : vban_jb_pull_f32(&jb, out, period);
             if (measuring) glitch_frames += (double)(period - got);
             if (getenv("NETSIM_DEBUG") && ((unsigned long)(pull_t * 1000) % 5000) < 3) {
                 vban_jb_stats_t d;
@@ -183,6 +197,14 @@ static result_t run(const scenario_t *sc, double seconds, unsigned fpp, unsigned
         }
     }
     vban_jb_get_stats(&jb, &st);
+    if (g_kring_target) {
+        st.concealed_frames = (uint32_t)kr.concealed;
+        st.target_frames = (uint32_t)kr.target;
+        st.underruns = (uint32_t)kr.underruns;
+        st.repaired = (uint32_t)kr.repaired;
+        st.late = (uint32_t)kr.late;
+        st.skips = (uint32_t)kr.skips;
+    }
     glitch_frames += (double)(st.concealed_frames - conc0);
     r.glitch_ms_min = glitch_frames / RATE * 1000.0 / ((seconds - 5.0) / 60.0);
     r.jb_ms = pulls ? jb_sum / pulls * 1000 : 0;
@@ -194,10 +216,18 @@ static result_t run(const scenario_t *sc, double seconds, unsigned fpp, unsigned
     r.late = st.late;
     r.concealed_frames = st.concealed_frames;
     r.skips = st.skips;
+    r.kr_reprimes = g_kring_target ? kr.reprimes : 0;
+    r.kr_skips = g_kring_target ? kr.skips : 0;
+    if (g_kring_target && getenv("NETSIM_KRING_STATS"))
+        fprintf(stderr, "  kring: concealed loss %llu stall %llu, re-primes %llu, skips %llu, ratio %+d ppm\n",
+                (unsigned long long)kr.concealed_loss, (unsigned long long)kr.concealed_stall,
+                (unsigned long long)kr.reprimes, (unsigned long long)kr.skips,
+                (int)(((int64_t)kr.ratio_q16 - 65536) * 1000000 / 65536));
     free(arr);
     return r;
 }
 
+#ifndef NETSIM_NO_MAIN
 int main(int argc, char **argv)
 {
     double secs = argc > 1 ? atof(argv[1]) : 120;
@@ -210,17 +240,34 @@ int main(int argc, char **argv)
     unsigned s;
     printf("mode: %s  fec: %s\n", mode, fec);
     printf("netsim: %.0f s per scenario, 48 kHz stereo, %u frames/packet, %u-frame audio period\n\n", secs, fpp, period);
-    printf("%-16s %8s %8s %8s %8s %9s %9s %9s %9s %6s %9s %11s\n", "scenario", "net ms", "jb ms", "E2E ms", "target", "underrun", "lost pkt", "repaired", "late pkt", "skips", "need p999", "glitch ms/m");
+    printf("%-24s %8s %8s %8s %8s %9s %9s %9s %9s %6s %9s %11s\n", "scenario", "net ms", "jb ms", "E2E ms", "target", "underrun", "lost pkt", "repaired", "late pkt", "skips", "need p999", "glitch ms/m");
+    {
+    const char *engine = argc > 7 ? argv[7] : "sdk";   /* sdk | kring:<frames> | both */
     for (s = 0; s < sizeof k_scen / sizeof k_scen[0]; ++s) {
         result_t r;
-        g_rng = 0x9E3779B97F4A7C15ull + s;
-        scenario_t sc = k_scen[s];
-        if (!strcmp(mode, "noloss")) sc.p_gb = 0;
-        if (!strcmp(mode, "nojitter")) { sc.jitter_ms = 0; sc.spike_prob = 0; }
-        if (!strcmp(mode, "nodrift")) sc.drift_ppm = 0;
-        r = run(&sc, secs, fpp, period, argc > 5 ? (uint32_t)atoi(argv[5]) : 64);
-        printf("%-16s %8.2f %8.2f %8.2f %8u %9u %9u %9u %9u %6u %9.2f %11.1f\n", k_scen[s].name, r.net_ms, r.jb_ms, r.e2e_ms,
-               r.target, r.underruns, r.lost_pkts, r.repaired, r.late, r.skips, r.need999_ms, r.glitch_ms_min);
+        int pass, passes = !strcmp(engine, "both") ? 2 : 1;
+        uint32_t sdk_target = 0;
+        for (pass = 0; pass < passes; ++pass) {
+            const char *tag = "";
+            g_rng = 0x9E3779B97F4A7C15ull + s;   /* identical network for both engines */
+            scenario_t sc = k_scen[s];
+            if (!strcmp(mode, "noloss")) sc.p_gb = 0;
+            if (!strcmp(mode, "nojitter")) { sc.jitter_ms = 0; sc.spike_prob = 0; }
+            if (!strcmp(mode, "nodrift")) sc.drift_ppm = 0;
+            if (!strncmp(engine, "kring:", 6)) { g_kring_target = atoi(engine + 6); tag = " [kernel]"; }
+            else if (pass == 1) { g_kring_target = (int)sdk_target; tag = " [kernel]"; }  /* same buffering as the SDK reached */
+            else { g_kring_target = 0; tag = passes == 2 ? " [sdk]" : ""; }
+            r = run(&sc, secs, fpp, period, argc > 5 ? (uint32_t)atoi(argv[5]) : 64);
+            if (pass == 0) sdk_target = r.target;
+            {
+                char label[48];
+                snprintf(label, sizeof label, "%s%s", k_scen[s].name, tag);
+                printf("%-24s %8.2f %8.2f %8.2f %8u %9u %9u %9u %9u %6u %9.2f %11.1f\n", label, r.net_ms, r.jb_ms, r.e2e_ms,
+                       r.target, r.underruns, r.lost_pkts, r.repaired, r.late, r.skips, r.need999_ms, r.glitch_ms_min);
+            }
+        }
+    }
     }
     return 0;
 }
+#endif /* NETSIM_NO_MAIN */

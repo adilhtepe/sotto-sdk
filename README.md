@@ -330,8 +330,18 @@ latency you hear is set by the packet size and buffer targets above.
        duplicate check now runs first.
    - **Fast-path cost** is unchanged within noise (1.03 / 7.3 ns per frame without / with resampling).
 
+10. **Kernel ring parity (`vban_parity`).** The kernel module's receive ring (`kernel/vban_kring.h`,
+    integer-only) was made buildable in userspace and run through `vban_netsim` next to the SDK
+    jitter buffer, on identical networks and buffering. It found three kernel problems the VM
+    tests could not: a stalled-hole lockup (14 re-primes, +66 % glitch on congested Wi-Fi), a slip
+    storm (36 000 drift slips in 120 s), and slips that could not be both quiet and fast. The fix
+    for the last two was a Q16 linear-interpolation resampler with the SDK's control law. Now the
+    kernel is within 1 % of the SDK's glitch time on LAN/Wi-Fi, 6–37 % lower on WAN (it buffers
+    1.3 ms more there), with 0 re-primes and no slips. `ctest` enforces this.
+
 ## Tests
-`vban_tests` has 426 checks and runs clean under ASan + UBSan (`-DVBAN_SANITIZE=ON`). The lock-free jitter buffer was also stress-tested under ThreadSanitizer, with loss, reordering, duplicates, restarts and rate changes from a producer thread against a pulling consumer thread: 0 races reported. The unit tests cover:
+`ctest` runs `vban_tests`, the C++ wrapper test and `vban_parity` (kernel ring vs SDK jitter
+buffer, see optimization log 10). `vban_tests` has 438 checks and runs clean under ASan + UBSan (`-DVBAN_SANITIZE=ON`). The lock-free jitter buffer was also stress-tested under ThreadSanitizer, with loss, reordering, duplicates, restarts and rate changes from a producer thread against a pulling consumer thread: 0 races reported. The unit tests cover:
 - spec header examples byte-for-byte (`0x52/0x10 "Command1"`, `0x2E "MIDI1"`, `0x60 00 20 0F`,
   `0x89 ll mm 0z`)
 - every parse error path
@@ -387,6 +397,14 @@ by an ISR; now masked with `ATOMIC_BLOCK`); `find_library(m)` missed libm in cro
 `-lm` was dropped and links failed (now a link probe); and MinGW `-Wpedantic` rejected the
 `GetProcAddress` casts.
 
+### Linux kernel sound card (`kernel/`)
+`snd-vban` is an ALSA virtual sound card. Playback is sent as a VBAN stream and capture receives
+one, so any Linux application (PipeWire, JACK, `aplay`/`arecord`) can use VBAN without a daemon.
+
+It is built from the SDK's protocol code, integer-only. It was tested end to end in a QEMU VM on
+the host's own kernel (7.0): a clean 440 Hz tone in both directions, redundant copies de-duplicated,
+30 open/close cycles, clean unload, no kernel warnings. See `kernel/README.md`.
+
 ### Android notes
 - **Permissions:** `android.permission.INTERNET`. To receive broadcast or multicast VBAN (and PING0
   discovery) over Wi-Fi, also hold a `WifiManager.MulticastLock` while listening; without it many
@@ -397,7 +415,9 @@ by an ISR; now masked with `ATOMIC_BLOCK`); `find_library(m)` missed libm in cro
 - **Audio thread:** call `vban_jb_pull_*` from an AAudio / Oboe data callback. For the network thread,
   `vban_thread_realtime()` tries `SCHED_FIFO` first, which apps are refused, then nice −19
   (`THREAD_PRIORITY_URGENT_AUDIO`). Whether a given device grants −19 to apps was not verified here.
-- **Kotlin/Java** apps need a small JNI layer around the C API; none is bundled.
+- **Kotlin/Java:** `android/` holds a Kotlin library (`vban.sdk`: `VbanSender`, `VbanReceiver`,
+  `VbanDiscovery`, `VbanCommand`, `VbanNetworkLocks`) over a JNI layer, and builds a 128 KB AAR. See
+  `android/README.md`.
 
 ## Security
 Every datagram is treated as hostile: VBAN has no authentication, and any host that can reach the port
