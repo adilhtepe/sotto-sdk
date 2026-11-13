@@ -1,6 +1,6 @@
-# VBAN SDK
+# Sotto SDK
 
-A portable C99 SDK for the VB-Audio **VBAN** network protocol (spec revision 13, Sep 2025). You can
+The C99 core of the **Sotto** project: an SDK for the VB-Audio **VBAN** network protocol (spec revision 13, Sep 2025). You can
 use it to build receivers, transmitters, mixers, routers, MIDI/serial bridges, remote controllers and
 discovery tools. It has three design goals: **no heap allocation**, **no blocking in the audio path**,
 and **byte-exact wire handling on any CPU** (little- or big-endian, any alignment).
@@ -554,3 +554,10 @@ were both refused.
 - The proprietary VBCA/VBCV codecs and 10/12-bit PCM cannot be decoded; they are passed through.
 - The resampler is linear interpolation. That is ideal for clock-drift correction (±0.5 %). For a
   large rate conversion (44.1 → 48 kHz) it works but is not hi-fi; do that in your audio stack.
+
+## Thanks
+This is part of **Sotto** (the `sotto` repository links all of its repositories). VBAN is the
+protocol of VB-Audio Software; Sotto is an independent implementation, not affiliated with
+VB-Audio. The full list of sources and thanks (reference implementations, Monocypher, miniaudio,
+Scream, Noise, the cacophony test vectors and the tools) is in the `sotto` repository's
+ACKNOWLEDGEMENTS.md.
