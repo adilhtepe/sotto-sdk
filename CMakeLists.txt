@@ -21,6 +21,11 @@ option(VBAN_SANITIZE        "Build with ASan + UBSan"        OFF)
 option(VBAN_WERROR          "Treat compiler warnings as errors (CI)" OFF)
 option(VBAN_ENABLE_SECURE   "Secure VBAN (certificates, Noise XX, ChaCha20-Poly1305; Monocypher)" ON)
 
+# The example tools and benches use fopen/getenv/strcpy on purpose; keep MSVC from flagging them.
+if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 set(VBAN_SOURCES
     src/vban_proto.c src/vban_pcm.c src/vban_jitter.c src/vban_mixer.c
     src/vban_rx.c src/vban_tx.c src/vban_net.c)

@@ -137,7 +137,7 @@ jobs:
         if: matrix.abi == 'x86_64'
         run: |
           CC="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
-          "$CC" --target=x86_64-linux-android21 -static -O2 -Isrc src/*.c tests/test_main.c -lm -o vban_tests_android
+          "$CC" --target=x86_64-linux-android21 -static -O2 -Isrc src/*.c third_party/monocypher/monocypher.c tests/test_main.c -lm -o vban_tests_android
           ./vban_tests_android
 
   # ------------------------------------------------------------------ ESP-IDF
