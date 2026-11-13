@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/adilhtepe/sotto/main/brand/sotto-logo-dark.svg">
+    <img alt="Sotto" src="https://raw.githubusercontent.com/adilhtepe/sotto/main/brand/sotto-logo.svg" height="72">
+  </picture>
+</p>
+
 # Sotto SDK
 
 The C99 core of the **Sotto** project: an SDK for the VB-Audio **VBAN** network protocol (spec revision 13, Sep 2025). You can
