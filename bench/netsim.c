@@ -16,7 +16,7 @@
  * = packetization (fpp/2) + mean network delay + jitter buffer + period/2.
  */
 #include "vban.h"
-#include "../kernel/vban_kring.h"   /* the snd-vban kernel ring, compiled for userspace */
+#include "../shared/vban_kring.h"   /* the snd-vban kernel ring (sotto-linux), compiled for userspace */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

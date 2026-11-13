@@ -331,7 +331,7 @@ latency you hear is set by the packet size and buffer targets above.
        duplicate check now runs first.
    - **Fast-path cost** is unchanged within noise (1.03 / 7.3 ns per frame without / with resampling).
 
-10. **Kernel ring parity (`vban_parity`).** The kernel module's receive ring (`kernel/vban_kring.h`,
+10. **Kernel ring parity (`vban_parity`).** The kernel module's receive ring (`shared/vban_kring.h`, shared with the kernel module in `sotto-linux`,
     integer-only) was made buildable in userspace and run through `vban_netsim` next to the SDK
     jitter buffer, on identical networks and buffering. It found three kernel problems the VM
     tests could not: a stalled-hole lockup (14 re-primes, +66 % glitch on congested Wi-Fi), a slip
@@ -398,13 +398,13 @@ by an ISR; now masked with `ATOMIC_BLOCK`); `find_library(m)` missed libm in cro
 `-lm` was dropped and links failed (now a link probe); and MinGW `-Wpedantic` rejected the
 `GetProcAddress` casts.
 
-### Linux kernel sound card (`kernel/`)
+### Linux kernel sound card (`sotto-linux` repository)
 `snd-vban` is an ALSA virtual sound card. Playback is sent as a VBAN stream and capture receives
 one, so any Linux application (PipeWire, JACK, `aplay`/`arecord`) can use VBAN without a daemon.
 
 It is built from the SDK's protocol code, integer-only. It was tested end to end in a QEMU VM on
 the host's own kernel (7.0): a clean 440 Hz tone in both directions, redundant copies de-duplicated,
-30 open/close cycles, clean unload, no kernel warnings. See `kernel/README.md`.
+30 open/close cycles, clean unload, no kernel warnings. See the `sotto-linux` repository.
 
 ### Android notes
 - **Permissions:** `android.permission.INTERNET`. To receive broadcast or multicast VBAN (and PING0
@@ -416,9 +416,9 @@ the host's own kernel (7.0): a clean 440 Hz tone in both directions, redundant c
 - **Audio thread:** call `vban_jb_pull_*` from an AAudio / Oboe data callback. For the network thread,
   `vban_thread_realtime()` tries `SCHED_FIFO` first, which apps are refused, then nice −19
   (`THREAD_PRIORITY_URGENT_AUDIO`). Whether a given device grants −19 to apps was not verified here.
-- **Kotlin/Java:** `android/` holds a Kotlin library (`vban.sdk`: `VbanSender`, `VbanReceiver`,
-  `VbanDiscovery`, `VbanCommand`, `VbanNetworkLocks`) over a JNI layer, and builds a 128 KB AAR. See
-  `android/README.md`.
+- **Kotlin/Java:** the `sotto-android` repository holds a Kotlin library (`vban.sdk`: `VbanSender`,
+  `VbanReceiver`, `VbanDiscovery`, `VbanCommand`, `VbanNetworkLocks`) over a JNI layer, and builds a
+  128 KB AAR.
 
 ## Security
 Every datagram is treated as hostile: VBAN has no authentication, and any host that can reach the port
@@ -442,30 +442,20 @@ into a stream, cancel an RT subscription (timeout 0), or keep disturbing a strea
 packets non-stop. These need authentication: use secure VBAN (next section) between SDK devices, or
 keep plain VBAN on trusted networks or inside a VPN such as WireGuard.
 
-## Sound devices and players on every platform
-| Platform | Virtual sound card | Player / sender | Tested here |
-|---|---|---|---|
-| Linux | `kernel/` ALSA card (`snd-vban`), or `apps/sotto-pw`: "Sotto in" / "Sotto out" on PipeWire, no kernel module | `apps/sotto` | yes: VM (ALSA), container with real PipeWire |
-| Windows | `drivers/windows`: "Sotto out", a fork of the Scream driver that sends VBAN | `apps/sotto` (WASAPI) | `sotto` under Wine; driver not built yet (needs WDK) |
-| macOS | `drivers/macos`: "Sotto Out" and "Sotto In" loopback devices (CoreAudio plug-in) | `apps/sotto` (CoreAudio) | not yet (needs a Mac) |
-| Android | `android/` library | your app | JVM tests |
+## The Sotto project
+This repository is the SDK. The rest of Sotto lives in sibling repositories that use it as a git
+submodule:
 
-`sotto` plays a VBAN stream on any sound device, or sends any device as VBAN, through miniaudio
-(public domain / MIT-0, vendored in `third_party/miniaudio`). The audio callback only touches
-lock-free buffers; sockets and encryption run on their own thread.
-```bash
-sotto devices                                       # list devices
-sotto play -n Mix -d "Speakers"                     # VBAN -> a device
-sotto send -i 192.168.2.1 -n Desk -d "Sotto Out"    # a device -> VBAN
-sotto play -n Mix --hub studio.example.net --ca ca.crt --cert me.crt --key me.key   # secure, over the internet
-```
-Results:
-- **Linux.** On real-time ALSA devices (`snd-aloop`, `apps/sotto/vm-test.sh`) both directions
-  carry a clean 440 Hz tone (largest sample step 472 / 461).
-- **PipeWire.** With a real daemon (`apps/sotto-pw/container-test.sh`), "Sotto out" to VBAN and
-  VBAN to "Sotto in" both pass the same check.
-- **Windows.** The build passes the network and jitter-buffer path under Wine (2130 packets,
-  0 lost), using `--null`, a silent, paced device for tests and headless servers.
+| Repository | What it is |
+|---|---|
+| `sotto` | The umbrella project: every repository below as a submodule, plus the website |
+| `sotto-sdk` | This C99 SDK: protocol, jitter buffer, mixer, secure VBAN, tests |
+| `sotto-app` | `sotto`: VBAN to and from any sound device on Windows, macOS and Linux |
+| `sotto-linux` | ALSA kernel sound card `snd-vban`, and "Sotto in" / "Sotto out" on PipeWire |
+| `sotto-windows` | "Sotto out" virtual sound card for Windows (a fork of the Scream driver) |
+| `sotto-macos` | "Sotto Out" / "Sotto In" virtual devices for macOS (CoreAudio plug-in) |
+| `sotto-android` | Kotlin library for Android |
+| `sotto-hub` | OpenWrt hub: routing, mixer, secure VBAN CA, LuCI, eBPF fast path |
 
 ## Secure VBAN (`vban_secure.h`, ADR-003)
 An optional layer (`-DVBAN_ENABLE_SECURE=ON`, the default) that authenticates and encrypts VBAN

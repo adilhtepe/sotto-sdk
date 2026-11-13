@@ -1,5 +1,5 @@
 /*
- * Parity test: the snd-vban kernel receive ring (kernel/vban_kring.h, the exact
+ * Parity test: the snd-vban kernel receive ring (shared/vban_kring.h, the exact
  * code the module runs) against the SDK jitter buffer (src/vban_jitter.c), on
  * the same simulated networks (bench/netsim.c) with the same buffering.
  *
