@@ -566,7 +566,6 @@ static void test_jitter_basic(void)
     /* a spoofed packet claiming another sample rate does not retune the stream (SEC-006) */
     {
         size_t len;
-        int k;
         vban_jb_get_stats(&jb, &st);
         len = mk_audio(b, 50002, 128, 2, &counter, 705600);
         vban_parse(b, len, &p, 0);
