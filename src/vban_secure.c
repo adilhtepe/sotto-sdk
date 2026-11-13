@@ -445,7 +445,7 @@ int vban_sec_peek(const uint8_t *in, size_t len, int *type, uint32_t *sender_idx
     if (!in || len < VBAN_SEC_HDR)
         return VBAN_E_SHORT;
     if (memcmp(in, "VBAN", 4) || in[4] != VBAN_PROTOCOL_USER || in[6] != 'S' || in[7] != 1 ||
-        in[5] < VBAN_SEC_HS1 || in[5] > VBAN_SEC_DATA)
+        in[5] < VBAN_SEC_HS1 || in[5] > VBAN_SEC_COOKIE)
         return VBAN_E_FORMAT;
     if (type) *type = in[5];
     if (sender_idx) *sender_idx = get32(in + 8);
@@ -533,7 +533,7 @@ int vban_sec_accept(vban_sec_session_t *s, const vban_sec_id_t *id, uint32_t loc
     if (!s || !id || !in || !out || !local_idx)
         return VBAN_E_ARG;
     if (vban_sec_peek(in, len, &type, &from, &to) || type != VBAN_SEC_HS1 || to != 0 || !from ||
-        len != VBAN_SEC_HDR + 32)
+        (len != VBAN_SEC_HDR + 32 && len != VBAN_SEC_HDR + 32 + VBAN_SEC_COOKIE_LEN))
         return VBAN_E_FORMAT;
     if (cap < VBAN_SEC_HS_MAX)
         return VBAN_E_NOSPACE;
@@ -542,7 +542,7 @@ int vban_sec_accept(vban_sec_session_t *s, const vban_sec_id_t *id, uint32_t loc
         return VBAN_E_UNSUPPORTED;
     hs_init(s, id, 0, e, in);
     crypto_wipe(e, sizeof(e));
-    n = vban_noise_read(&s->hs, in + VBAN_SEC_HDR, len - VBAN_SEC_HDR, payload, 0);
+    n = vban_noise_read(&s->hs, in + VBAN_SEC_HDR, 32, payload, 0);   /* a cookie may follow: not Noise */
     if (n < 0) {
         kill(s);
         return n;
@@ -630,8 +630,8 @@ int vban_sec_handle(vban_sec_session_t *s, const vban_sec_id_t *id, const uint8_
         if (now_ms - s->up_ms > VBAN_SEC_EXPIRE_MS)
             return VBAN_E_STATE;       /* expired: the initiator must rekey */
         n = open_data(s->rx_key, &s->rx_top, &s->rx_bits, &s->rx_any, in, len, out, cap);
-        if (n >= 0)
-            *event = VBAN_SEC_EV_DATA;
+        if (n > 0)
+            *event = VBAN_SEC_EV_DATA;         /* n == 0: keepalive, nothing to deliver */
         return n;
     }
 
@@ -685,7 +685,7 @@ int vban_sec_handle(vban_sec_session_t *s, const vban_sec_id_t *id, const uint8_
 int vban_sec_seal(vban_sec_session_t *s, const uint8_t *inner, size_t len, uint64_t now_ms, uint8_t *out,
                   size_t cap)
 {
-    if (!s || !inner || !out)
+    if (!s || (!inner && len) || !out)
         return VBAN_E_ARG;
     if (s->state != VBAN_SEC_UP || now_ms - s->up_ms > VBAN_SEC_EXPIRE_MS || s->tx_ctr >> 60)
         return VBAN_E_STATE;
@@ -694,7 +694,7 @@ int vban_sec_seal(vban_sec_session_t *s, const uint8_t *inner, size_t len, uint6
     if (cap < len + VBAN_SEC_OVERHEAD)
         return VBAN_E_NOSPACE;
     hdr(out, VBAN_SEC_DATA, s->local_idx, s->remote_idx, s->tx_ctr);
-    vban_noise_encrypt(s->tx_key, s->tx_ctr, out, VBAN_SEC_HDR, inner, len, out + VBAN_SEC_HDR);
+    vban_noise_encrypt(s->tx_key, s->tx_ctr, out, VBAN_SEC_HDR, len ? inner : out, len, out + VBAN_SEC_HDR);
     s->tx_ctr++;
     return (int)(len + VBAN_SEC_OVERHEAD);
 }
@@ -736,15 +736,25 @@ int vban_sec_link_tick(vban_sec_link_t *l, const vban_sec_id_t *id, uint64_t now
     else
         need = (!vban_sec_link_up(l, now_ms) || now_ms - l->cur.up_ms >= VBAN_SEC_REKEY_MS) &&
                (!l->tried || now_ms - l->last_try_ms >= VBAN_SEC_RETRY_MS);   /* also after a refusal */
-    if (!need)
+    if (!need) {
+        if (vban_sec_link_up(l, now_ms) && now_ms - l->last_tx_ms >= VBAN_SEC_KEEPALIVE_MS)
+            return vban_sec_link_seal(l, NULL, 0, now_ms, out, cap);   /* keepalive */
         return 0;
+    }
     {
         uint32_t idx = new_idx(l);
+        int n;
         if (!idx)
             return VBAN_E_UNSUPPORTED;
         l->tried = 1;
         l->last_try_ms = now_ms;
-        return vban_sec_connect(&l->next, id, idx, now_ms, out, cap);
+        l->last_tx_ms = now_ms;
+        n = vban_sec_connect(&l->next, id, idx, now_ms, out, cap);
+        if (n == VBAN_SEC_HDR + 32) {
+            memcpy(l->hs1, out, (size_t)n);
+            l->cookie_used = 0;
+        }
+        return n;
     }
 }
 
@@ -758,6 +768,17 @@ int vban_sec_link_handle(vban_sec_link_t *l, const vban_sec_id_t *id, const uint
     *event = VBAN_SEC_EV_NONE;
     if ((r = vban_sec_peek(in, len, &type, &from, &to)) != VBAN_OK)
         return r;
+    if (type == VBAN_SEC_COOKIE) {         /* the responder is busy: resend HS1 with its cookie, once */
+        if (l->next.state != VBAN_SEC_WAIT_HS2 || to != l->next.local_idx || l->cookie_used ||
+            len != VBAN_SEC_HDR + VBAN_SEC_COOKIE_LEN || cap < sizeof(l->hs1))
+            return VBAN_E_STATE;
+        memcpy(out, l->hs1, VBAN_SEC_HDR + 32);
+        memcpy(out + VBAN_SEC_HDR + 32, in + VBAN_SEC_HDR, VBAN_SEC_COOKIE_LEN);
+        l->cookie_used = 1;
+        l->last_tx_ms = now_ms;
+        *event = VBAN_SEC_EV_SEND;
+        return (int)sizeof(l->hs1);
+    }
     if (l->next.state == VBAN_SEC_WAIT_HS2 && to == l->next.local_idx) {
         r = vban_sec_handle(&l->next, id, in, len, now_ms, out, cap, event);
         if (r >= 0 && l->next.state == VBAN_SEC_UP) {
@@ -778,7 +799,7 @@ int vban_sec_link_handle(vban_sec_link_t *l, const vban_sec_id_t *id, const uint
     if (l->prev_idx && to == l->prev_idx && type == VBAN_SEC_DATA && now_ms < l->prev_until_ms) {
         uint8_t any = 1;
         r = open_data(l->prev_rx_key, &l->prev_top, &l->prev_bits, &any, in, len, out, cap);
-        if (r >= 0)
+        if (r > 0)
             *event = VBAN_SEC_EV_DATA;
         return r;
     }
@@ -788,7 +809,10 @@ int vban_sec_link_handle(vban_sec_link_t *l, const vban_sec_id_t *id, const uint
 int vban_sec_link_seal(vban_sec_link_t *l, const uint8_t *inner, size_t len, uint64_t now_ms, uint8_t *out,
                        size_t cap)
 {
-    return vban_sec_seal(&l->cur, inner, len, now_ms, out, cap);
+    int n = vban_sec_seal(&l->cur, inner, len, now_ms, out, cap);
+    if (n > 0)
+        l->last_tx_ms = now_ms;
+    return n;
 }
 
 /* ------------------------------------------------------------------ */
@@ -804,6 +828,32 @@ void vban_sec_server_init(vban_sec_server_t *srv, vban_sec_peer_t *peers, unsign
     srv->n = n;
     srv->hs_per_sec = hs_per_sec ? hs_per_sec : 20;
     srv->hs_tokens = srv->hs_per_sec;
+    srv->cookie_tokens = srv->hs_per_sec;
+    vban_sec_random(srv->cookie_key, 32);
+    memcpy(srv->cookie_prev, srv->cookie_key, 32);
+}
+
+/* MAC of the initiator's address and index under a key that rotates every 2 minutes. */
+static void make_cookie(const uint8_t key[32], const vban_addr_t *from, uint32_t sidx, uint8_t out[VBAN_SEC_COOKIE_LEN])
+{
+    uint8_t m[10];
+    put32(m, from->ip);
+    m[4] = (uint8_t)from->port;
+    m[5] = (uint8_t)(from->port >> 8);
+    put32(m + 6, sidx);
+    crypto_blake2b_keyed(out, VBAN_SEC_COOKIE_LEN, key, 32, m, sizeof(m));
+}
+
+static int cookie_ok(const vban_sec_server_t *srv, const uint8_t *in, size_t len, const vban_addr_t *from, uint32_t sidx)
+{
+    uint8_t c[VBAN_SEC_COOKIE_LEN];
+    if (len != VBAN_SEC_HDR + 32 + VBAN_SEC_COOKIE_LEN)
+        return 0;
+    make_cookie(srv->cookie_key, from, sidx, c);
+    if (!crypto_verify16(c, in + VBAN_SEC_HDR + 32))
+        return 1;
+    make_cookie(srv->cookie_prev, from, sidx, c);
+    return !crypto_verify16(c, in + VBAN_SEC_HDR + 32);
 }
 
 static int slot_free(const vban_sec_session_t *s, uint64_t now_ms)
@@ -829,22 +879,59 @@ int vban_sec_server_handle(vban_sec_server_t *srv, const vban_sec_id_t *id, cons
     if (type == VBAN_SEC_HS1) {
         vban_sec_peer_t *p = NULL;
         uint32_t idx = 0;
+        int with_cookie = 0;
         if (now_ms - srv->hs_refill_ms >= 1000) {
             srv->hs_tokens = srv->hs_per_sec;
+            srv->cookie_tokens = srv->hs_per_sec;
             srv->hs_refill_ms = now_ms;
         }
+        if (now_ms - srv->cookie_ms >= 120000) {
+            memcpy(srv->cookie_prev, srv->cookie_key, 32);
+            vban_sec_random(srv->cookie_key, 32);
+            srv->cookie_ms = now_ms;
+        }
         if (!srv->hs_tokens) {
-            srv->hs_refused++;
-            return VBAN_E_NOSPACE;
+            if (!cookie_ok(srv, in, len, from, sidx)) {
+                if (cap < VBAN_SEC_HDR + VBAN_SEC_COOKIE_LEN)
+                    return VBAN_E_NOSPACE;
+                hdr(out, VBAN_SEC_COOKIE, 0, sidx, 0);   /* smaller than the HS1: no amplification */
+                make_cookie(srv->cookie_key, from, sidx, out + VBAN_SEC_HDR);
+                srv->hs_cookies++;
+                *event = VBAN_SEC_EV_SEND;
+                return VBAN_SEC_HDR + VBAN_SEC_COOKIE_LEN;
+            }
+            if (!srv->cookie_tokens) {
+                srv->hs_refused++;
+                return VBAN_E_NOSPACE;
+            }
+            with_cookie = 1;
         }
         for (i = 0; i < srv->n && !p; ++i)
             if (slot_free(&srv->peers[i].s, now_ms))
                 p = &srv->peers[i];
+        /* Full: take the oldest unfinished handshake. Half-open slots from a flood then
+         * churn instead of locking new peers out for 5 s; a real peer completes in one
+         * round trip, long before a flood at the rate limit reaches its slot again.
+         * Established sessions are never evicted. */
+        for (i = 0; i < srv->n && !p; ++i) {
+            vban_sec_peer_t *q = &srv->peers[i];
+            unsigned k;
+            if (q->s.state != VBAN_SEC_WAIT_HS3)
+                continue;
+            p = q;
+            for (k = i + 1; k < srv->n; ++k)
+                if (srv->peers[k].s.state == VBAN_SEC_WAIT_HS3 && srv->peers[k].s.hs_ms < p->s.hs_ms)
+                    p = &srv->peers[k];
+            srv->hs_evicted++;
+        }
         if (!p) {
             srv->hs_refused++;
             return VBAN_E_NOSPACE;
         }
-        srv->hs_tokens--;
+        if (with_cookie)
+            srv->cookie_tokens--;
+        else
+            srv->hs_tokens--;
         while (!idx) {                     /* random, unique among live slots */
             uint8_t b[4];
             if (vban_sec_random(b, 4))

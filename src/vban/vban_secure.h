@@ -54,13 +54,17 @@ extern "C" {
 #define VBAN_CERT_ROLE_CA   0x80
 
 /* Secure message types (outer header byte 5). */
-enum { VBAN_SEC_HS1 = 1, VBAN_SEC_HS2 = 2, VBAN_SEC_HS3 = 3, VBAN_SEC_DATA = 4 };
+enum { VBAN_SEC_HS1 = 1, VBAN_SEC_HS2 = 2, VBAN_SEC_HS3 = 3, VBAN_SEC_DATA = 4, VBAN_SEC_COOKIE = 5 };
+#define VBAN_SEC_COOKIE_LEN 16
 
 /* Session timing (ms). */
 #define VBAN_SEC_REKEY_MS     120000u   /* initiator re-handshakes after this */
 #define VBAN_SEC_EXPIRE_MS    180000u   /* keys refused after this */
 #define VBAN_SEC_PREV_MS      10000u    /* previous receive key kept after a rekey */
 #define VBAN_SEC_RETRY_MS     1000u     /* handshake initiation resent after this */
+#define VBAN_SEC_KEEPALIVE_MS 15000u    /* an idle link sends an empty DATA packet, so that NAT
+                                           mappings stay open and the responder can still reach
+                                           a device that only receives (over the internet) */
 
 typedef struct vban_cert {
     uint8_t  role;                      /* VBAN_CERT_ROLE_* */
@@ -169,11 +173,16 @@ typedef struct vban_sec_link {
     uint64_t prev_top, prev_bits;
     uint64_t last_try_ms;
     uint8_t  tried;
+    uint8_t  hs1[VBAN_SEC_HDR + 32 + VBAN_SEC_COOKIE_LEN];   /* last HS1, resent with a cookie */
+    uint8_t  cookie_used;
+    uint64_t last_tx_ms;                 /* last packet this link sent (keepalive timer) */
 } vban_sec_link_t;
 
 void vban_sec_link_init(vban_sec_link_t *l);
-/* Call regularly (e.g. every 100 ms) and after each send: returns a handshake
- * packet to send (> 0), 0 if nothing to do. */
+/* Call regularly (e.g. every 100 ms) and after each send: returns a packet to send
+ * (> 0: a handshake, or a keepalive after VBAN_SEC_KEEPALIVE_MS without traffic),
+ * 0 if nothing to do. A keepalive arrives at the other side as a DATA packet with an
+ * empty inner packet: handle() returns 0 with no event. */
 int  vban_sec_link_tick(vban_sec_link_t *l, const vban_sec_id_t *id, uint64_t now_ms, uint8_t *out, size_t cap);
 /* Feed a received USER packet. Same return / event convention as vban_sec_handle(). */
 int  vban_sec_link_handle(vban_sec_link_t *l, const vban_sec_id_t *id, const uint8_t *in, size_t len,
@@ -196,10 +205,21 @@ typedef struct vban_sec_server {
     unsigned         hs_tokens;
     uint64_t         hs_refill_ms;
     uint32_t         hs_refused;        /* stats: rate-limited or no free slot */
+    uint32_t         hs_evicted;        /* stats: unfinished handshakes pushed out when full */
+    /* Under load (the per-second budget is used up), an HS1 gets a COOKIE reply instead of
+     * work: a MAC of its source address. Only an initiator that really is at that address can
+     * send it back, so floods from spoofed addresses cannot use up the second budget below. */
+    uint8_t          cookie_key[32], cookie_prev[32];
+    uint64_t         cookie_ms;
+    unsigned         cookie_tokens;
+    uint32_t         hs_cookies;        /* stats: cookie replies sent */
 } vban_sec_server_t;
 
 void vban_sec_server_init(vban_sec_server_t *srv, vban_sec_peer_t *peers, unsigned n, unsigned hs_per_sec);
-/* Feed any USER packet. HS1 takes a free (or expired / stale) slot and answers
+/* Feed any USER packet. When the handshake budget of this second is used up, an HS1
+ * without a valid cookie is answered with a COOKIE packet (EV_SEND, 44 bytes, no state).
+ * HS1 takes a free (or expired / stale) slot, else the oldest
+ * unfinished handshake (never an established session), and answers
  * (EV_SEND: send out back to from). Other packets go to the slot their receiver
  * index names. *peer is set for EV_SEND / EV_UP / EV_DATA. Same return
  * convention as vban_sec_handle(). A peer's address follows its authenticated

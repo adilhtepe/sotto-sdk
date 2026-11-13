@@ -365,6 +365,20 @@ static void test_link_server(void)
     CHECK(vban_sec_link_tick(&l, &tx.id, t + VBAN_SEC_PREV_MS, hsbuf, sizeof(hsbuf)) == 0);  /* drops the old key */
     CHECK(vban_sec_link_handle(&l, &tx.id, old_pkt, (size_t)old_len, t + VBAN_SEC_PREV_MS, out, sizeof(out), &ev) < 0);
 
+    /* an idle link sends a keepalive (NAT); it arrives as nothing to deliver, and moves the peer */
+    {
+        uint64_t idle = t + VBAN_SEC_KEEPALIVE_MS + 20000;
+        vban_sec_peer_t *pp = NULL;
+        CHECK(vban_sec_link_tick(&l, &tx.id, t + 1, hsbuf, sizeof(hsbuf)) == 0);              /* just sent data */
+        n = vban_sec_link_tick(&l, &tx.id, t + VBAN_SEC_KEEPALIVE_MS + 1, hsbuf, sizeof(hsbuf));
+        CHECK(n == VBAN_SEC_OVERHEAD && hsbuf[5] == VBAN_SEC_DATA);
+        CHECK(vban_sec_link_tick(&l, &tx.id, t + VBAN_SEC_KEEPALIVE_MS + 2, hsbuf + 100, sizeof(hsbuf) - 100) == 0);
+        from.port = 50002;
+        r = vban_sec_server_handle(&srv, &hub.id, hsbuf, (size_t)n, &from, t + VBAN_SEC_KEEPALIVE_MS + 1, out, sizeof(out), &ev, &pp);
+        CHECK(r == 0 && ev == VBAN_SEC_EV_NONE && pp && pp->addr.port == 50002);
+        (void)idle;
+    }
+
     /* full table and the handshake rate limit */
     {
         vban_sec_link_t l2;
@@ -372,10 +386,57 @@ static void test_link_server(void)
         n = vban_sec_link_tick(&l2, &tx.id, t, hsbuf, sizeof(hsbuf));
         CHECK(vban_sec_server_handle(&srv, &hub.id, hsbuf, (size_t)n, &from, t, reply, sizeof(reply), &ev, &peer) ==
               VBAN_E_NOSPACE);         /* both slots live */
+        /* a full table of half-open handshakes (a flood) does not lock a real peer out */
+        {
+            vban_sec_link_t f1, f2;
+            uint8_t a1[VBAN_SEC_HS_MAX];
+            int m;
+            vban_sec_server_init(&srv, slots, 2, 20);
+            vban_sec_link_init(&f1);
+            vban_sec_link_init(&f2);
+            m = vban_sec_link_tick(&f1, &tx.id, t, a1, sizeof(a1));
+            CHECK(vban_sec_server_handle(&srv, &hub.id, a1, (size_t)m, &from, t, reply, sizeof(reply), &ev, &peer) > 0);
+            m = vban_sec_link_tick(&f2, &tx.id, t + 1, a1, sizeof(a1));
+            CHECK(vban_sec_server_handle(&srv, &hub.id, a1, (size_t)m, &from, t + 1, reply, sizeof(reply), &ev, &peer) > 0);
+            r = vban_sec_server_handle(&srv, &hub.id, hsbuf, (size_t)n, &from, t + 2, reply, sizeof(reply), &ev, &peer);
+            CHECK(r > 0 && srv.hs_evicted == 1 && peer == &slots[0]);     /* the oldest half-open slot */
+            r = vban_sec_link_handle(&l2, &tx.id, reply, (size_t)r, t + 2, fin, sizeof(fin), &ev);
+            CHECK(r > 0 && vban_sec_server_handle(&srv, &hub.id, fin, (size_t)r, &from, t + 2, tmp, sizeof(tmp), &ev, &peer) == 0 &&
+                  ev == VBAN_SEC_EV_UP);
+        }
+        /* budget used up: an HS1 gets a COOKIE (no state, smaller than the HS1); the link resends
+         * with it and gets in on the cookie budget; a cookie for another address does not work */
+        {
+            vban_sec_link_t c1;
+            vban_addr_t other = { VBAN_IP(10, 0, 0, 9), 50000 };
+            uint8_t a1[VBAN_SEC_HS_MAX], ck[VBAN_SEC_HS_MAX], again[VBAN_SEC_HS_MAX];
+            int m, k;
+            vban_sec_peer_t s3[3];
+            vban_sec_server_init(&srv, s3, 3, 1);
+            vban_sec_link_init(&c1);
+            m = vban_sec_link_tick(&c1, &tx.id, t, a1, sizeof(a1));
+            CHECK(vban_sec_server_handle(&srv, &hub.id, a1, (size_t)m, &from, t, ck, sizeof(ck), &ev, &peer) > 0);   /* uses the budget */
+            vban_sec_link_init(&c1);
+            m = vban_sec_link_tick(&c1, &tx.id, t, a1, sizeof(a1));
+            k = vban_sec_server_handle(&srv, &hub.id, a1, (size_t)m, &from, t, ck, sizeof(ck), &ev, &peer);
+            CHECK(k == VBAN_SEC_HDR + VBAN_SEC_COOKIE_LEN && k < m && ev == VBAN_SEC_EV_SEND && ck[5] == VBAN_SEC_COOKIE &&
+                  srv.hs_cookies == 1);
+            r = vban_sec_link_handle(&c1, &tx.id, ck, (size_t)k, t, again, sizeof(again), &ev);
+            CHECK(r == VBAN_SEC_HDR + 32 + VBAN_SEC_COOKIE_LEN && ev == VBAN_SEC_EV_SEND);
+            CHECK(vban_sec_link_handle(&c1, &tx.id, ck, (size_t)k, t, again, sizeof(again), &ev) == VBAN_E_STATE);  /* once */
+            /* the same cookie from another address is answered with a cookie again, not with work */
+            CHECK(vban_sec_server_handle(&srv, &hub.id, again, (size_t)r, &other, t, reply, sizeof(reply), &ev, &peer) ==
+                  VBAN_SEC_HDR + VBAN_SEC_COOKIE_LEN && srv.hs_cookies == 2);
+            k = vban_sec_server_handle(&srv, &hub.id, again, (size_t)r, &from, t, reply, sizeof(reply), &ev, &peer);
+            CHECK(k > 100 && ev == VBAN_SEC_EV_SEND && peer);                                                     /* real HS2 */
+            r = vban_sec_link_handle(&c1, &tx.id, reply, (size_t)k, t, fin, sizeof(fin), &ev);
+            CHECK(r > 0 && vban_sec_server_handle(&srv, &hub.id, fin, (size_t)r, &from, t, tmp, sizeof(tmp), &ev, &peer) == 0 &&
+                  ev == VBAN_SEC_EV_UP);
+        }
         vban_sec_server_init(&srv, slots, 2, 1);
         CHECK(vban_sec_server_handle(&srv, &hub.id, hsbuf, (size_t)n, &from, t, reply, sizeof(reply), &ev, &peer) > 0);
         CHECK(vban_sec_server_handle(&srv, &hub.id, hsbuf, (size_t)n, &from, t, reply, sizeof(reply), &ev, &peer) ==
-              VBAN_E_NOSPACE && srv.hs_refused == 1);
+              VBAN_SEC_HDR + VBAN_SEC_COOKIE_LEN && srv.hs_cookies == 1);   /* over budget: a cookie, no work */
     }
 }
 

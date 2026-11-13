@@ -72,7 +72,7 @@ EOF
             cmake -S /sdk -B $d -DCMAKE_TOOLCHAIN_FILE=/sdk/ci/mingw-toolchain.cmake -DMINGW_TRIPLE=$t \
                 -DCMAKE_BUILD_TYPE=Release -DVBAN_WERROR=ON >/dev/null
             cmake --build $d -j'"$JOBS"'
-            (cd $d && wine ./vban_tests.exe | tail -1 | grep -q " 0 failures" && wine ./vban_cpp_test.exe)
+            (cd $d && wine ./vban_tests.exe | tail -1 | grep -q " 0 failures" && wine ./vban_cpp_test.exe && wine ./vban_secure_test.exe | tail -1 | grep -q " 0 failed")
         done'
 }
 st_espidf() {

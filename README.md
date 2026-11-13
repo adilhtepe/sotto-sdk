@@ -442,10 +442,35 @@ into a stream, cancel an RT subscription (timeout 0), or keep disturbing a strea
 packets non-stop. These need authentication: use secure VBAN (next section) between SDK devices, or
 keep plain VBAN on trusted networks or inside a VPN such as WireGuard.
 
+## Sound devices and players on every platform
+| Platform | Virtual sound card | Player / sender | Tested here |
+|---|---|---|---|
+| Linux | `kernel/` ALSA card (`snd-vban`), or `apps/sotto-pw`: "Sotto in" / "Sotto out" on PipeWire, no kernel module | `apps/sotto` | yes: VM (ALSA), container with real PipeWire |
+| Windows | `drivers/windows`: "Sotto out", a fork of the Scream driver that sends VBAN | `apps/sotto` (WASAPI) | `sotto` under Wine; driver not built yet (needs WDK) |
+| macOS | `drivers/macos`: "Sotto Out" and "Sotto In" loopback devices (CoreAudio plug-in) | `apps/sotto` (CoreAudio) | not yet (needs a Mac) |
+| Android | `android/` library | your app | JVM tests |
+
+`sotto` plays a VBAN stream on any sound device, or sends any device as VBAN, through miniaudio
+(public domain / MIT-0, vendored in `third_party/miniaudio`). The audio callback only touches
+lock-free buffers; sockets and encryption run on their own thread.
+```bash
+sotto devices                                       # list devices
+sotto play -n Mix -d "Speakers"                     # VBAN -> a device
+sotto send -i 192.168.2.1 -n Desk -d "Sotto Out"    # a device -> VBAN
+sotto play -n Mix --hub studio.example.net --ca ca.crt --cert me.crt --key me.key   # secure, over the internet
+```
+Results:
+- **Linux.** On real-time ALSA devices (`snd-aloop`, `apps/sotto/vm-test.sh`) both directions
+  carry a clean 440 Hz tone (largest sample step 472 / 461).
+- **PipeWire.** With a real daemon (`apps/sotto-pw/container-test.sh`), "Sotto out" to VBAN and
+  VBAN to "Sotto in" both pass the same check.
+- **Windows.** The build passes the network and jitter-buffer path under Wine (2130 packets,
+  0 lost), using `--null`, a silent, paced device for tests and headless servers.
+
 ## Secure VBAN (`vban_secure.h`, ADR-003)
 An optional layer (`-DVBAN_ENABLE_SECURE=ON`, the default) that authenticates and encrypts VBAN
 between SDK devices and the hub. It does not change plain VBAN, and Voicemeeter keeps working
-unencrypted; the hub bridges between the two (phase 2).
+unencrypted; the OpenWrt hub bridges between the two. The hub has a CA and a Security tab in LuCI.
 
 - **Crypto.** Monocypher 4.0.3 (BSD-2 / CC-0), vendored unmodified in `third_party/monocypher`. Its
   SHA-512 was checked against monocypher.org and the GitHub release. No crypto is written here; this
@@ -474,7 +499,14 @@ vban_cert req mic.key "PC mic" tx mic.req            # send mic.req to the CA
 vban_cert sign ca.key ca.crt mic.req 365 mic.crt     # at the CA; give mic.crt back
 vban_recv -n Stream1 --ca ca.crt --cert rx.crt --key rx.key | aplay -f S16_LE -r 48000 -c 2
 vban_send -i 192.168.1.20 -n Stream1 --ca ca.crt --cert mic.crt --key mic.key
+vban_recv -n Out --hub 192.168.2.1 --ca ca.crt --cert rx.crt --key rx.key   # receive from a secure hub
 ```
+Devices always start the session (initiator). A receiver behind the hub uses `--hub`, so the hub can
+send its routed streams into that session. This also makes secure VBAN work across the internet
+and through NAT. An idle link sends a 44-byte keepalive every 15 s (`VBAN_SEC_KEEPALIVE_MS`), so
+NAT mappings stay open for devices that only receive. The responder follows a device to a new
+address on its next authenticated packet. The hub's README describes the setup and the
+simulated-internet test.
 
 In code, a transmitter wraps its send callback with `vban_sec_link_seal()` and feeds replies to
 `vban_sec_link_handle()` / `vban_sec_link_tick()`. A receiver keeps a `vban_sec_server_t` (a table of
@@ -497,7 +529,7 @@ At 750 packets/s, encryption costs about 0.3 % of a core. Only what you call get
 static library, but Monocypher is one object: link with `-ffunction-sections -Wl,--gc-sections` to
 drop its unused parts.
 
-**Tests.** `vban_secure_test` (in `ctest`, 180 checks) covers:
+**Tests.** `vban_secure_test` (in `ctest`, 191 checks) covers:
 - the `Noise_XX_25519_ChaChaPoly_BLAKE2b` vector from the cacophony suite: all three handshake
   messages, the handshake hash and the transport messages, byte for byte;
 - every single-bit change of a certificate, and every single-bit change of a DATA packet (all
@@ -506,7 +538,8 @@ drop its unused parts.
   certificate without its key, and a tampered session index;
 - replay, reordering, and expiry;
 - retry, rekey with the old key still accepted, and peer roaming;
-- the responder's table limit and handshake rate limit;
+- the responder's table limit, the rate limit, eviction of half-open handshakes, and the cookie
+  (sent only over budget, used once, rejected from another address);
 - `vban_tx` → seal → open → `vban_rx` end to end.
 
 Over real UDP, `vban_send` → `vban_recv` in secure mode delivered a tone with 0 loss at the same
@@ -514,12 +547,17 @@ latency as plain mode. A plain sender (1125 packets) and a sender with a certifi
 were both refused.
 
 **Limits:**
-- A responder accepts any handshake start and keeps a slot for it for 5 s. Its table and rate limit
-  (20/s by default) bound the CPU cost, but a flood of handshake starts can keep new peers waiting.
-  The hub adds per-address limits in phase 2.
+- **Handshake floods.** A responder's handshake budget (20/s by default) bounds its CPU cost. Once
+  the budget is used up, a handshake start gets a COOKIE reply: 44 bytes, smaller than the request,
+  and no state. Only an initiator that is really at its address can resend with the cookie, so
+  floods from forged addresses cannot lock real peers out. A full table evicts its oldest
+  unfinished handshake, never an established session. The hub adds a per-address limit on top.
 - Devices without a clock (`now_unix = 0`) cannot check validity dates; revocation through
   `authorize` still works.
-- Not yet run on Windows, ESP-IDF or Android. It does compile for Cortex-M4 and aarch64.
+- Windows: the secure checks pass under Wine (win64 and win32, `BCryptGenRandom`); the CI's mingw stage
+  runs them. Not yet run on ESP-IDF or Android. It does compile for Cortex-M4 and aarch64.
+- On the hub (MT7981, 2× A53), decrypting and routing secure packets costs about 20 µs per packet
+  more than plain forwarding: 8 secure streams used 24 % of a core.
 
 ## Limits
 - IPv4 only. The VBAN ecosystem, including PING0's `DistantIP_ascii`, is IPv4.
