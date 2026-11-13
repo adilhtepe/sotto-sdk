@@ -27,7 +27,7 @@ set(VBAN_SOURCES
 
 if(VBAN_ENABLE_SECURE)
     list(APPEND VBAN_SOURCES src/vban_noise.c src/vban_secure.c)
-    # Vendored, unmodified (third_party/monocypher/VERSION): built with its own flags, no -Wpedantic noise.
+    # Vendored, unmodified (third_party/monocypher/MONOCYPHER_VERSION): built with its own flags, no -Wpedantic noise.
     add_library(vban_monocypher OBJECT third_party/monocypher/monocypher.c)
     set_target_properties(vban_monocypher PROPERTIES C_STANDARD 99 POSITION_INDEPENDENT_CODE ON)
     target_include_directories(vban_monocypher PUBLIC third_party/monocypher)

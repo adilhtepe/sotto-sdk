@@ -268,7 +268,11 @@ int vban_udp_wait_us(vban_socket_t *s, long timeout_us)
     struct timeval tv, *tp = NULL;
     int r;
     FD_ZERO(&rs);
-    FD_SET(s->fd, &rs);
+#if defined(_WIN32)
+    FD_SET((SOCKET)s->fd, &rs);
+#else
+    FD_SET((int)s->fd, &rs);
+#endif
     if (timeout_us >= 0) { tv.tv_sec = (long)(timeout_us / 1000000); tv.tv_usec = (long)(timeout_us % 1000000); tp = &tv; }
 #if defined(_WIN32)
     r = select(0, &rs, NULL, NULL, tp);
